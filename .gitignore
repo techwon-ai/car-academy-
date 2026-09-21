@@ -3,3 +3,6 @@
 output/
 queries.txt
 leads-*.csv
+
+# generated lead output (contains business contact data; repo is public)
+roofers-*-openstreetmap-*.csv
