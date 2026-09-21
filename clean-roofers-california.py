@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Turn the raw Google Maps scrape into the final 50-lead CSV.
 
-Filter: roofers in California with NO website listed.
+Filter: roofers in California with NO website listed. Target 200 leads.
+
+Usage: python3 clean-roofers-california.py [RAW_CSV] [TARGET]
 
 Guard that matters: a blank `website` only counts as "no website listed" when the
 listing actually extracted. If the row has no business name, extraction failed and
@@ -11,7 +13,7 @@ import csv, datetime, re, sys
 from urllib.parse import urlparse
 
 RAW = sys.argv[1] if len(sys.argv) > 1 else "output/raw-roofers-california.csv"
-TARGET = 50
+TARGET = int(sys.argv[2]) if len(sys.argv) > 2 else 200
 
 STANDARD = ["title", "category", "phone_number", "website", "email_address",
             "review_count", "review_rating", "google_maps_link"]
