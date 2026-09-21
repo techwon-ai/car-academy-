@@ -1,0 +1,5 @@
+# local-lead-scraper: local tooling, scraper binary, and scraped output
+.local-lead-scraper/
+output/
+queries.txt
+leads-*.csv
