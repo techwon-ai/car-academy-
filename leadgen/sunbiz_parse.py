@@ -64,11 +64,14 @@ def parse_cor(path, out):
                              "display": display_name(raw) if typ == "P" else nm,
                              "city": f(rec, b + 89, 28), "state": f(rec, b + 117, 2)})
         ra = " ".join(f(rec, 545, 42).split())
+        ra_type = f(rec, 587, 1)
+        ra_display = display_name(rec[544:586]) if ra_type == "P" else ra
         out.append({"doc": f(rec, 1, 12), "name": name, "kind": "corp", "filing_type": ftype,
                     "filed": filed, "trade": trade,
                     "addr": f(rec, 221, 42), "addr2": f(rec, 263, 42), "city": f(rec, 305, 28),
                     "state": f(rec, 333, 2) or "FL", "zip": f(rec, 335, 10)[:5],
-                    "officers": officers, "registered_agent": ra, "file": os.path.basename(path)})
+                    "officers": officers, "registered_agent": ra, "ra_type": ra_type, "ra_display": ra_display,
+                    "file": os.path.basename(path)})
 
 def parse_fic(path, out):
     for rec in open(path, encoding="latin1"):

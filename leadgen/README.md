@@ -1,8 +1,8 @@
-# Techwon lead pipeline (Florida home services)
+# Eclat lead pipeline (Florida home services)
 
 Free sources only. Every step is resumable and writes its working data under `output/work/`
 (git-ignored). Final lists land in `leads/` (also git-ignored: they hold owner names and phone
-numbers, and this repo is public). See `leads/run_log.md` for what the last run found.
+numbers, and this repo is public). See `leads/eclat_run_log.md` for what the last run found.
 
 | Step | Script | Notes |
 |---|---|---|
@@ -15,7 +15,8 @@ numbers, and this repo is public). See `leads/run_log.md` for what the last run 
 | Jobs | `sources/linkedin_jobs.py` | LinkedIn guest endpoint; Indeed and ZipRecruiter are Cloudflare-walled |
 | Owner requests | `sources/reddit_rss.py`, `sources/craigslist.js` | Reddit RSS multireddit search; Craigslist FL gigs and jobs |
 | Website audit | `enrich/audit.py` (quick HTML) then `enrich/audit_render.js` (real mobile Chromium) | only the rendered audit can award "fails" or "parked" points |
-| Build | `build_leads.py <scratch dir>` | scoring, dedupe, pitch hooks, `leads/techwon_leads.csv`, `leads/top50.csv` |
+| Build (current) | `build_eclat.py <scratch dir>` | only new filings already live on Google with a verified FL phone, a real website gap, and score 7; writes `leads/eclat_leads.csv` |
+| Build (v1, superseded) | `build_leads.py <scratch dir>` | the broader first sheet; kept for reference |
 
 Environment notes for this container: `PLAYWRIGHT_NODEJS_PATH=$(command -v node)` and a
 `PLAYWRIGHT_BROWSERS_PATH` that maps Chromium 1169 to the preinstalled build are needed for gosom,
