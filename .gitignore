@@ -6,3 +6,8 @@ leads-*.csv
 
 # generated lead output (contains business contact data; repo is public)
 roofers-*-openstreetmap-*.csv
+
+# Techwon lead lists: owner names and phone numbers stay local, never in this public repo
+leads/*.csv
+leadgen/sources/curated_*.json
+__pycache__/
