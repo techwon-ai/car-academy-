@@ -1,0 +1,468 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Techwon Books</title>
+<style>
+:root{--bg:#f6f7f9;--panel:#fff;--ink:#16191d;--muted:#5d6670;--line:#e2e5e9;--accent:#1f6feb;--accent-ink:#fff;
+--good:#1a7f37;--bad:#c62828;--warn:#9a6700;--chip:#eef1f4;--side:#101418;--side-ink:#c9d1d9;--side-active:#1f6feb}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#0d1117;--panel:#161b22;--ink:#e6edf3;--muted:#8b949e;
+--line:#30363d;--accent:#4c8dff;--good:#3fb950;--bad:#f85149;--warn:#d29922;--chip:#21262d;--side:#010409}}
+*{box-sizing:border-box}body{margin:0;font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--ink)}
+.app{display:flex;min-height:100vh}
+nav{width:210px;flex:none;background:var(--side);color:var(--side-ink);padding:16px 10px;position:sticky;top:0;height:100vh;overflow:auto}
+nav h1{font-size:17px;margin:4px 10px 18px;color:#fff;letter-spacing:.2px}nav h1 small{display:block;font-weight:400;font-size:11px;color:#8b949e}
+nav button{display:block;width:100%;text-align:left;background:none;border:0;color:inherit;padding:8px 10px;border-radius:6px;font-size:14px;cursor:pointer}
+nav button:hover{background:#ffffff14}nav button.active{background:var(--side-active);color:#fff}
+main{flex:1;min-width:0;padding:22px 26px 60px}
+header.top{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:16px}header.top h2{margin:0;font-size:21px;flex:1}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:16px}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}.kpi .l{color:var(--muted);font-size:12px}
+.kpi .v{font-size:22px;font-weight:600;font-variant-numeric:tabular-nums;margin-top:2px}.kpi .s{font-size:12px;color:var(--muted)}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}th,td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{font-size:12px;color:var(--muted);font-weight:600;white-space:nowrap}td.n,th.n{text-align:right;white-space:nowrap}
+tr.click{cursor:pointer}tr.click:hover td{background:var(--chip)}tr.total td{font-weight:700;border-top:2px solid var(--ink)}tr.sub td{font-weight:600}
+tr.head td{font-weight:700;background:var(--chip)}td.indent{padding-left:24px}
+.wrap{overflow-x:auto}
+button.b,a.b{background:var(--panel);color:var(--ink);border:1px solid var(--line);padding:7px 12px;border-radius:7px;cursor:pointer;font-size:13px;text-decoration:none;white-space:nowrap}
+button.b:hover{border-color:var(--muted)}button.p{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}button.d{color:var(--bad)}
+.pill{display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px;background:var(--chip);color:var(--muted)}
+.pill.paid{color:var(--good)}.pill.overdue{color:var(--bad)}.pill.open,.pill.partial{color:var(--accent)}.pill.draft{color:var(--warn)}.pill.void{text-decoration:line-through}
+form.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px 12px;align-items:end}
+label{display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--muted)}label.chk{flex-direction:row;align-items:center;gap:6px;color:var(--ink);font-size:13px}
+input,select,textarea{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:6px 8px;min-width:0}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:-1px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:end}.muted{color:var(--muted)}.right{margin-left:auto}.neg{color:var(--bad)}
+.lines td input,.lines td select{width:100%}
+#toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:8px;display:none;max-width:90vw;z-index:50}
+#toast.err{background:var(--bad);color:#fff}
+dialog{border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--ink);max-width:min(860px,96vw);width:860px;padding:0}
+dialog::backdrop{background:#0008}dialog .dh{display:flex;align-items:center;padding:14px 18px;border-bottom:1px solid var(--line)}dialog .dh h3{margin:0;flex:1}
+dialog .db{padding:16px 18px;max-height:75vh;overflow:auto}
+.bars{display:flex;gap:10px;align-items:flex-end;height:150px;padding-top:10px}.bar{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;font-size:11px;color:var(--muted)}
+.bar i{display:block;width:100%;max-width:48px;background:var(--accent);border-radius:4px 4px 0 0;min-height:2px}.bar i.ni{background:var(--good)}.bar i.ni.neg{background:var(--bad)}
+.bar .pair{display:flex;gap:3px;align-items:flex-end;height:110px;width:100%;justify-content:center}
+.legend{display:flex;gap:14px;font-size:12px;color:var(--muted)}.legend span::before{content:"";display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;background:var(--accent);vertical-align:-1px}.legend span.g::before{background:var(--good)}
+.note{background:var(--chip);border-radius:8px;padding:10px 12px;color:var(--muted);font-size:13px;margin:8px 0}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+@media (max-width:760px){.app{flex-direction:column}nav{width:auto;height:auto;position:static;display:flex;flex-wrap:wrap;gap:2px;padding:8px}
+nav h1{width:100%;margin:4px 6px 8px}nav button{width:auto}main{padding:16px}}
+@media print{nav,header.top .b,.noprint{display:none!important}main{padding:0}.card{border:0}}
+</style>
+</head>
+<body>
+<div class="app">
+<nav id="nav"><h1><span id="co">Techwon</span><small>Techwon Books</small></h1></nav>
+<main id="main"></main>
+</div>
+<dialog id="dlg"><div class="dh"><h3 id="dlgT"></h3><button class="b" onclick="dlg.close()">Close</button></div><div class="db" id="dlgB"></div></dialog>
+<div id="toast"></div>
+<script>
+"use strict";
+// ---------- helpers ----------
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let CUR = "USD";
+const fmt = (c, opts={}) => { if (c === null || c === undefined) return "—";
+  const s = new Intl.NumberFormat(undefined, {style:"currency", currency:CUR}).format(c/100);
+  return opts.color && c < 0 ? `<span class="neg">${s}</span>` : s; };
+function toCents(v) { // exact string parse: "1,234.5" -> 123450
+  v = String(v ?? "").trim().replace(/[,\s$€£₩]/g, ""); if (v === "") return 0;
+  const m = v.match(/^(-)?(\d*)(?:\.(\d{0,2}))?$/); if (!m || (m[2] === "" && !m[3])) throw new Error(`"${v}" is not a valid amount`);
+  return (m[1] ? -1 : 1) * (parseInt(m[2] || "0", 10) * 100 + parseInt((m[3] || "").padEnd(2, "0") || "0", 10)); }
+const dollars = c => (c/100).toFixed(2);
+const today = () => new Date().toISOString().slice(0, 10);
+const monthStart = () => today().slice(0, 8) + "01";
+function toast(msg, err) { const t = $("#toast"); t.textContent = msg; t.className = err ? "err" : ""; t.style.display = "block";
+  clearTimeout(t._h); t._h = setTimeout(() => t.style.display = "none", err ? 6000 : 2500); }
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  const j = await r.json().catch(() => ({error: "Bad response"}));
+  if (!r.ok) throw new Error(j.error || r.statusText); return j; }
+async function act(fn, okMsg) { try { const r = await fn(); if (okMsg) toast(okMsg); return r; } catch (e) { toast(e.message, true); throw e; } }
+const pill = s => `<span class="pill ${esc(s)}">${esc(s)}</span>`;
+function formData(form) { const o = {}; new FormData(form).forEach((v, k) => o[k] = v);
+  form.querySelectorAll("input[type=checkbox]").forEach(c => o[c.name] = c.checked); return o; }
+const opt = (v, label, sel) => `<option value="${esc(v)}" ${String(v) === String(sel) ? "selected" : ""}>${esc(label)}</option>`;
+function openDlg(title, html) { $("#dlgT").textContent = title; $("#dlgB").innerHTML = html; if (!dlg.open) dlg.showModal(); }
+function tableCSV(tbl, name) { const rows = [...tbl.querySelectorAll("tr")].map(tr => [...tr.children].map(td =>
+  '"' + td.innerText.replace(/"/g, '""') + '"').join(","));
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([rows.join("\n")], {type: "text/csv"}));
+  a.download = name + ".csv"; a.click(); }
+
+// cached reference data
+let REF = {accounts: [], clients: [], projects: [], vendors: [], settings: {}};
+async function loadRef() {
+  const [accounts, clients, projects, vendors, settings] = await Promise.all(
+    ["/api/accounts", "/api/clients", "/api/projects", "/api/vendors", "/api/settings"].map(p => api(p)));
+  REF = {accounts, clients, projects, vendors, settings}; CUR = settings.currency || "USD";
+  $("#co").textContent = settings.company_name; document.title = settings.company_name + " · Books"; }
+const acctOpts = (filter, sel) => REF.accounts.filter(a => a.is_active && filter(a)).map(a => opt(a.code, `${a.code} · ${a.name}`, sel)).join("");
+const clientOpts = (sel, blank = "— none —") => opt("", blank) + REF.clients.filter(c => c.is_active).map(c => opt(c.id, c.name, sel)).join("");
+const projectOpts = (clientId, sel) => opt("", "— none —") + REF.projects.filter(p => (!clientId || p.client_id == clientId) && p.status === "active")
+  .map(p => opt(p.id, clientId ? p.name : `${p.client_name} · ${p.name}`, sel)).join("");
+
+// ---------- routing ----------
+const PAGES = {dashboard: "Dashboard", invoices: "Invoices", bills: "Bills & Expenses", clients: "Clients & Projects",
+  vendors: "Vendors", banking: "Bank Reconciliation", journal: "Journal Entries", accounts: "Chart of Accounts",
+  reports: "Reports", settings: "Settings"};
+function nav() { $("#nav").innerHTML = $("#nav").querySelector("h1").outerHTML + Object.entries(PAGES).map(([k, v]) =>
+  `<button data-p="${k}" class="${(location.hash.slice(1) || "dashboard").split("/")[0] === k ? "active" : ""}">${v}</button>`).join("");
+  $("#nav").querySelectorAll("button").forEach(b => b.onclick = () => location.hash = b.dataset.p); }
+async function render() { nav(); const [p, arg] = (location.hash.slice(1) || "dashboard").split("/");
+  try { await loadRef(); await (VIEWS[p] || VIEWS.dashboard)(arg); } catch (e) { $("#main").innerHTML = `<div class="card neg">${esc(e.message)}</div>`; } }
+window.addEventListener("hashchange", render);
+const page = (title, actions, body) => $("#main").innerHTML = `<header class="top"><h2>${title}</h2>${actions || ""}</header>${body}`;
+
+// ---------- views ----------
+const VIEWS = {};
+
+VIEWS.dashboard = async () => {
+  const d = await api("/api/dashboard");
+  const max = Math.max(1, ...d.trend.map(t => Math.max(t.net_revenue_cents, Math.abs(t.net_income_cents))));
+  const aging = await api("/api/reports/ar-aging");
+  page("Dashboard", `<span class="muted">${esc(d.today)}</span>`, `
+  <div class="kpis">
+   <div class="kpi"><div class="l">Cash in bank</div><div class="v">${fmt(d.cash_cents, {color: 1})}</div></div>
+   <div class="kpi"><div class="l">Owed to you (A/R)</div><div class="v">${fmt(d.ar_cents)}</div><div class="s">${d.overdue_count} overdue · ${fmt(d.overdue_cents)}</div></div>
+   <div class="kpi"><div class="l">You owe (A/P)</div><div class="v">${fmt(d.ap_cents)}</div></div>
+   <div class="kpi"><div class="l">Net revenue this month</div><div class="v">${fmt(d.mtd_net_revenue_cents)}</div><div class="s">after pass-through media</div></div>
+   <div class="kpi"><div class="l">Net income YTD</div><div class="v">${fmt(d.ytd_net_income_cents, {color: 1})}</div><div class="s">${d.ytd_net_margin_pct ?? "—"}% of net revenue</div></div>
+   <div class="kpi"><div class="l">Unbilled client expenses</div><div class="v">${fmt(d.unbilled_expenses_cents)}</div><div class="s">${d.unbilled_expenses_cents ? '<a href="#invoices">rebill these →</a>' : "all billed"}</div></div>
+  </div>
+  <div class="card"><div class="row"><b>Last 6 months</b><div class="legend right"><span>Net revenue</span><span class="g">Net income</span></div></div>
+   <div class="bars">${d.trend.map(t => `<div class="bar" title="${t.month}: revenue ${fmt(t.net_revenue_cents)}, income ${fmt(t.net_income_cents)}">
+    <div class="pair"><i style="height:${100 * t.net_revenue_cents / max}%"></i><i class="ni ${t.net_income_cents < 0 ? "neg" : ""}" style="height:${100 * Math.abs(t.net_income_cents) / max}%"></i></div>${t.month}</div>`).join("")}</div></div>
+  <div class="card"><b>Overdue invoices</b><div class="wrap"><table><tr><th>Invoice</th><th>Client</th><th>Due</th><th class="n">Days late</th><th class="n">Balance</th></tr>
+   ${aging.items.filter(i => i.bucket !== "current").map(i => `<tr class="click" onclick="showInvoice(${i.invoice_id})"><td>${esc(i.number)}</td><td>${esc(i.client)}</td><td>${i.due_date}</td><td class="n">${i.days_overdue}</td><td class="n">${fmt(i.balance_cents)}</td></tr>`).join("") || '<tr><td colspan=5 class="muted">Nothing overdue.</td></tr>'}
+  </table></div></div>`);
+};
+
+// ----- invoices -----
+VIEWS.invoices = async () => {
+  const inv = await api("/api/invoices"); const unb = await api("/api/unbilled-expenses");
+  const byClient = {}; unb.forEach(b => (byClient[b.client_id] ??= {name: b.client_name, total: 0, n: 0}, byClient[b.client_id].total += b.amount_cents, byClient[b.client_id].n++));
+  page("Invoices", `<button class="b" onclick="retainerDlg()">Generate retainers</button><button class="b p" onclick="invoiceForm()">+ New invoice</button>`, `
+  ${Object.keys(byClient).length ? `<div class="card"><b>Unbilled billable expenses</b><table>${Object.entries(byClient).map(([id, c]) =>
+    `<tr><td>${esc(c.name)}</td><td>${c.n} expense(s)</td><td class="n">${fmt(c.total)}</td><td class="n"><button class="b" onclick="rebillDlg(${id})">Rebill…</button></td></tr>`).join("")}</table></div>` : ""}
+  <div class="card"><div class="row noprint" style="margin-bottom:8px"><select id="fStatus" onchange="filterInv()"><option value="">All statuses</option>${["draft", "open", "partial", "overdue", "paid", "void"].map(s => opt(s, s)).join("")}</select>
+   <input id="fText" placeholder="Search client / number" oninput="filterInv()"><button class="b right" onclick="tableCSV($('#invT'),'invoices')">Export CSV</button></div>
+  <div class="wrap"><table id="invT"><tr><th>Number</th><th>Client</th><th>Project</th><th>Date</th><th>Due</th><th>Status</th><th class="n">Total</th><th class="n">Balance</th></tr>
+  ${inv.map(i => `<tr class="click" data-s="${i.display_status}" data-t="${esc((i.client_name + " " + (i.number || "draft")).toLowerCase())}" onclick="showInvoice(${i.id})">
+   <td>${esc(i.number || "Draft")}</td><td>${esc(i.client_name)}</td><td>${esc(i.project_name || "")}</td><td>${i.issue_date}</td><td>${i.due_date}</td><td>${pill(i.display_status)}</td>
+   <td class="n">${fmt(i.total_cents)}</td><td class="n">${i.status === "issued" ? fmt(i.balance_cents) : ""}</td></tr>`).join("") || '<tr><td colspan=8 class="muted">No invoices yet.</td></tr>'}
+  </table></div></div>`);
+};
+window.filterInv = () => { const s = $("#fStatus").value, t = $("#fText").value.toLowerCase();
+  document.querySelectorAll("#invT tr[data-s]").forEach(r => r.style.display = (!s || r.dataset.s === s) && r.dataset.t.includes(t) ? "" : "none"); };
+
+const revOpts = sel => acctOpts(a => a.type === "income", sel);
+const lineRow = (l = {}) => `<tr><td><input name="description" value="${esc(l.description || "")}" placeholder="Description"></td>
+ <td style="width:80px"><input name="quantity" value="${esc(l.quantity || "1")}"></td>
+ <td style="width:120px"><input name="unit_price" value="${l.unit_price_cents !== undefined ? dollars(l.unit_price_cents) : ""}" placeholder="0.00"></td>
+ <td style="width:210px"><select name="revenue_account_code">${revOpts(l.revenue_account_code || "4100")}</select></td>
+ <td style="width:50px;text-align:center"><input type="checkbox" name="taxable" ${l.taxable === 0 ? "" : "checked"}></td>
+ <td style="width:30px"><button type="button" class="b d" onclick="this.closest('tr').remove()">×</button></td></tr>`;
+window.invoiceForm = async (id) => {
+  const inv = id ? await api(`/api/invoices/${id}`) : null; const s = REF.settings;
+  openDlg(inv ? "Edit draft invoice" : "New invoice", `<form id="invF" class="grid">
+   <label>Client<select name="client_id" required onchange="this.form.project_id.innerHTML=projectOpts(this.value)">${clientOpts(inv?.client_id, "— choose —")}</select></label>
+   <label>Project<select name="project_id">${projectOpts(inv?.client_id, inv?.project_id)}</select></label>
+   <label>Invoice date<input type="date" name="issue_date" value="${inv?.issue_date || today()}" required></label>
+   <label>Due date <span class="muted">(blank = client terms)</span><input type="date" name="due_date" value="${inv?.due_date || ""}"></label>
+   <label>Tax rate %<input name="tax_pct" value="${((inv ? inv.tax_rate_bp : +s.default_tax_rate_bp) / 100).toString()}"></label>
+   <label style="grid-column:1/-1">Notes / payment instructions<textarea name="notes" rows="2">${esc(inv?.notes || "")}</textarea></label></form>
+   <div class="wrap"><table class="lines" id="invL"><tr><th>Description</th><th>Qty / hrs</th><th>Rate</th><th>Income account</th><th>Tax</th><th></th></tr>
+   ${(inv?.lines || [{}]).map(lineRow).join("")}</table></div>
+   <div class="row" style="margin-top:10px"><button class="b" onclick="$('#invL').insertAdjacentHTML('beforeend', lineRow())">+ Line</button>
+   <button class="b right" onclick="saveInvoice(${id || 0}, false)">Save draft</button><button class="b p" onclick="saveInvoice(${id || 0}, true)">Save &amp; issue</button></div>`);
+};
+function pctToBp(v) { const c = toCents(v || "0"); if (c < 0) throw new Error("Tax rate cannot be negative"); return c; } // "7.5" -> 750
+window.saveInvoice = async (id, issue) => act(async () => {
+  const f = formData($("#invF"));
+  const lines = [...document.querySelectorAll("#invL tr")].slice(1).map(tr => ({
+    description: tr.querySelector("[name=description]").value, quantity: tr.querySelector("[name=quantity]").value || "1",
+    unit_price_cents: toCents(tr.querySelector("[name=unit_price]").value), revenue_account_code: tr.querySelector("[name=revenue_account_code]").value,
+    taxable: tr.querySelector("[name=taxable]").checked})).filter(l => l.description || l.unit_price_cents);
+  const body = {issue_date: f.issue_date, due_date: f.due_date || null, project_id: f.project_id || null, tax_rate_bp: pctToBp(f.tax_pct), notes: f.notes, lines};
+  if (id) { if (!f.due_date) delete body.due_date; await api(`/api/invoices/${id}`, body); }
+  else { if (!f.client_id) throw new Error("Choose a client"); id = (await api("/api/invoices", {...body, client_id: f.client_id})).id; }
+  if (issue) { const r = await api(`/api/invoices/${id}/issue`, {}); toast(`Issued ${r.number}`); } else toast("Draft saved");
+  dlg.close(); render(); });
+
+window.showInvoice = async (id) => {
+  const i = await api(`/api/invoices/${id}`);
+  const bankOpts = acctOpts(a => a.subtype === "cash");
+  openDlg(`${i.number || "Draft invoice"} — ${i.client_name}`, `<div class="row" style="margin-bottom:10px">${pill(i.display_status)}
+   <span class="muted">Issued ${i.issue_date} · Due ${i.due_date}${i.project_name ? " · " + esc(i.project_name) : ""}</span>
+   <span class="right"></span>
+   ${i.status === "draft" ? `<button class="b" onclick="invoiceForm(${id})">Edit</button><button class="b d" onclick="delInvoice(${id})">Delete</button><button class="b p" onclick="issueInv(${id})">Issue</button>` : ""}
+   ${i.status !== "draft" ? `<button class="b" onclick="printInvoice(${id})">Print / PDF</button>` : ""}
+   ${i.status === "issued" && i.paid_cents === 0 ? `<button class="b d" onclick="voidInv(${id})">Void</button>` : ""}</div>
+   <table><tr><th>Description</th><th class="n">Qty</th><th class="n">Rate</th><th>Account</th><th class="n">Amount</th></tr>
+   ${i.lines.map(l => `<tr><td>${esc(l.description)}${l.taxable ? "" : ' <span class="muted">(no tax)</span>'}</td><td class="n">${esc(l.quantity)}</td><td class="n">${fmt(l.unit_price_cents)}</td><td>${esc(l.revenue_account_code)}</td><td class="n">${fmt(l.amount_cents)}</td></tr>`).join("")}
+   <tr><td colspan=4 class="n">Subtotal</td><td class="n">${fmt(i.subtotal_cents)}</td></tr>
+   <tr><td colspan=4 class="n">Tax (${i.tax_rate_bp / 100}%)</td><td class="n">${fmt(i.tax_cents)}</td></tr>
+   <tr class="total"><td colspan=4 class="n">Total</td><td class="n">${fmt(i.total_cents)}</td></tr>
+   <tr><td colspan=4 class="n">Paid</td><td class="n">${fmt(i.paid_cents)}</td></tr>
+   <tr class="sub"><td colspan=4 class="n">Balance due</td><td class="n">${fmt(i.status === "issued" ? i.balance_cents : 0)}</td></tr></table>
+   ${i.payments.length ? `<h4>Payments</h4><table>${i.payments.map(p => `<tr><td>${p.date}</td><td>${esc(p.reference)}</td><td>${esc(p.deposit_account_code)}</td><td class="n">${p.voided ? "<s>" + fmt(p.amount_cents) + "</s> void" : fmt(p.amount_cents)}</td>
+     <td class="n">${p.voided ? "" : `<button class="b d" onclick="voidPayment(${p.id},${id})">Void</button>`}</td></tr>`).join("")}</table>` : ""}
+   ${i.status === "issued" && i.balance_cents > 0 ? `<h4>Receive payment</h4><form class="grid" id="payF">
+     <label>Date<input type="date" name="date" value="${today()}"></label><label>Amount<input name="amount" value="${dollars(i.balance_cents)}"></label>
+     <label>Deposit to<select name="acct">${bankOpts}</select></label><label>Reference<input name="ref" placeholder="ACH / check #"></label>
+     <button class="b p" type="button" onclick="payInv(${id})">Record payment</button></form>` : ""}`);
+};
+window.issueInv = id => act(async () => { const r = await api(`/api/invoices/${id}/issue`, {}); toast(`Issued ${r.number}`); await showInvoice(id); render(); });
+window.delInvoice = id => confirm("Delete this draft?") && act(async () => { await api(`/api/invoices/${id}/delete`, {}); dlg.close(); render(); }, "Draft deleted");
+window.voidInv = id => confirm("Void this invoice? A reversing entry will be posted.") && act(async () => { await api(`/api/invoices/${id}/void`, {}); await showInvoice(id); render(); }, "Invoice voided");
+window.voidPayment = (pid, id) => confirm("Void this payment?") && act(async () => { await api(`/api/payments/${pid}/void`, {}); await showInvoice(id); render(); }, "Payment voided");
+window.payInv = id => act(async () => { const f = formData($("#payF"));
+  await api(`/api/invoices/${id}/payments`, {date: f.date, amount_cents: toCents(f.amount), deposit_account_code: f.acct, reference: f.ref});
+  await showInvoice(id); render(); }, "Payment recorded");
+window.printInvoice = async id => { const i = await api(`/api/invoices/${id}`); const s = REF.settings; const w = window.open("", "_blank");
+  w.document.write(`<!doctype html><title>${esc(i.number)}</title><style>body{font:14px system-ui;margin:40px;color:#111}table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px solid #ddd;text-align:left}.n{text-align:right}h1{margin:0}.t td{font-weight:700;border-top:2px solid #111}</style>
+  <div style="display:flex;justify-content:space-between"><div><h1>${esc(s.company_name)}</h1></div><div style="text-align:right"><h2 style="margin:0">INVOICE ${esc(i.number)}</h2>Date: ${i.issue_date}<br>Due: ${i.due_date}</div></div>
+  <p><b>Bill to</b><br>${esc(i.client_name)}<br>${esc(i.client_address).replace(/\n/g, "<br>")}<br>${esc(i.client_email)}</p>${i.project_name ? `<p>Project: ${esc(i.project_name)}</p>` : ""}
+  <table><tr><th>Description</th><th class="n">Qty</th><th class="n">Rate</th><th class="n">Amount</th></tr>${i.lines.map(l => `<tr><td>${esc(l.description)}</td><td class="n">${esc(l.quantity)}</td><td class="n">${fmt(l.unit_price_cents)}</td><td class="n">${fmt(l.amount_cents)}</td></tr>`).join("")}
+  <tr><td colspan=3 class="n">Subtotal</td><td class="n">${fmt(i.subtotal_cents)}</td></tr>${i.tax_cents ? `<tr><td colspan=3 class="n">Tax ${i.tax_rate_bp / 100}%</td><td class="n">${fmt(i.tax_cents)}</td></tr>` : ""}
+  <tr class="t"><td colspan=3 class="n">Total</td><td class="n">${fmt(i.total_cents)}</td></tr>${i.paid_cents ? `<tr><td colspan=3 class="n">Paid</td><td class="n">${fmt(i.paid_cents)}</td></tr><tr class="t"><td colspan=3 class="n">Balance due</td><td class="n">${fmt(i.balance_cents)}</td></tr>` : ""}</table>
+  ${i.notes ? `<p style="margin-top:24px;white-space:pre-wrap">${esc(i.notes)}</p>` : ""}${i.status === "void" ? '<h2 style="color:#c00">VOID</h2>' : ""}`);
+  w.document.close(); w.focus(); w.print(); };
+window.retainerDlg = () => openDlg("Generate monthly retainer invoices", `<p class="muted">Creates and issues one invoice per active client with a monthly retainer. Clients already invoiced for that month are skipped, so running it twice is safe.</p>
+  <form class="grid" id="retF"><label>Month<input type="month" name="period" value="${today().slice(0, 7)}"></label><label>Invoice date <span class="muted">(blank = 1st)</span><input type="date" name="issue_date"></label>
+  <button class="b p" type="button" onclick="genRet()">Generate</button></form>
+  <h4>Clients on retainer</h4><table>${REF.clients.filter(c => c.retainer_cents && c.is_active).map(c => `<tr><td>${esc(c.name)}</td><td class="n">${fmt(c.retainer_cents)}/mo</td></tr>`).join("") || '<tr><td class="muted">None — set a retainer on a client first.</td></tr>'}</table>`);
+window.genRet = () => act(async () => { const f = formData($("#retF")); const r = await api("/api/retainers/generate", {period: f.period, issue_date: f.issue_date || null});
+  toast(`Created ${r.created.length}, skipped ${r.skipped.length}`); dlg.close(); render(); });
+window.rebillDlg = async cid => { const items = await api(`/api/unbilled-expenses?client_id=${cid}`);
+  openDlg("Rebill expenses to client", `<p class="muted">Pass-through media is billed to <b>4300 Pass-through Media Billings</b>; other costs to <b>4400 Reimbursed Client Expenses</b>. A draft invoice is created for review.</p>
+  <table id="rbT"><tr><th></th><th>Date</th><th>Vendor</th><th>Description</th><th class="n">Cost</th></tr>${items.map(b => `<tr><td><input type="checkbox" value="${b.id}" checked></td><td>${b.bill_date}</td><td>${esc(b.vendor_name)}</td><td>${esc(b.description)}</td><td class="n">${fmt(b.amount_cents)}</td></tr>`).join("")}</table>
+  <form class="grid" id="rbF" style="margin-top:10px"><label>Invoice date<input type="date" name="issue_date" value="${today()}"></label><label>Markup %<input name="markup" value="0"></label>
+  <button class="b p" type="button" onclick="doRebill(${cid})">Create draft invoice</button></form>`); };
+window.doRebill = cid => act(async () => { const f = formData($("#rbF")); const ids = [...document.querySelectorAll("#rbT input:checked")].map(c => +c.value);
+  const r = await api("/api/rebill", {client_id: cid, issue_date: f.issue_date, markup_bp: pctToBp(f.markup), bill_ids: ids}); await render(); showInvoice(r.id); }, "Draft rebill invoice created");
+
+// ----- bills -----
+VIEWS.bills = async () => {
+  const bills = await api("/api/bills");
+  page("Bills & Expenses", `<button class="b" onclick="billForm(true)">+ Expense (paid now)</button><button class="b p" onclick="billForm(false)">+ Bill (pay later)</button>`, `
+  <div class="card"><div class="row noprint" style="margin-bottom:8px"><button class="b right" onclick="tableCSV($('#billT'),'bills')">Export CSV</button></div><div class="wrap"><table id="billT">
+  <tr><th>Date</th><th>Vendor</th><th>Description</th><th>Account</th><th>Client / project</th><th>Status</th><th class="n">Amount</th><th class="n">Balance</th><th></th></tr>
+  ${bills.map(b => `<tr><td>${b.bill_date}</td><td>${esc(b.vendor_name)}</td><td>${esc(b.description)}${b.billable ? ` <span class="pill">${b.rebilled_invoice_number ? "rebilled " + esc(b.rebilled_invoice_number) : b.rebilled_invoice_id ? "on draft invoice" : "billable"}</span>` : ""}</td>
+   <td>${esc(b.expense_account_code)} ${esc(b.expense_account_name)}</td><td>${esc(b.client_name || "")}${b.project_name ? " · " + esc(b.project_name) : ""}</td><td>${pill(b.display_status)}</td>
+   <td class="n">${fmt(b.amount_cents)}</td><td class="n">${b.balance_cents ? fmt(b.balance_cents) : ""}</td>
+   <td class="n" style="white-space:nowrap">${b.balance_cents ? `<button class="b" onclick="payBillDlg(${b.id},${b.balance_cents})">Pay</button>` : ""}
+   ${b.status === "open" && !b.paid_cents && !b.rebilled_invoice_id ? `<button class="b d" onclick="voidBill(${b.id})">Void</button>` : ""}
+   ${b.payments.filter(p => !p.voided).map(p => `<button class="b d" title="Void payment of ${fmt(p.amount_cents)} on ${p.date}" onclick="voidBillPay(${p.id})">Void pmt</button>`).join("")}</td></tr>`).join("") || '<tr><td colspan=9 class="muted">No bills yet.</td></tr>'}
+  </table></div></div>`);
+};
+window.billForm = paidNow => openDlg(paidNow ? "Record expense (paid now)" : "Enter bill", `<form class="grid" id="billF">
+  <label>Vendor<select name="vendor_id">${opt("", "— choose —")}${REF.vendors.map(v => opt(v.id, v.name)).join("")}</select></label>
+  <label>New vendor instead<input name="new_vendor" placeholder="Type a name to add"></label>
+  <label>Date<input type="date" name="bill_date" value="${today()}"></label>${paidNow ? "" : `<label>Due date<input type="date" name="due_date"></label>`}
+  <label>Amount<input name="amount" placeholder="0.00" required></label>
+  <label>Category (account)<select name="expense_account_code">${acctOpts(a => a.type === "expense" || ["current_asset", "fixed_asset"].includes(a.subtype), "6900")}</select></label>
+  <label style="grid-column:span 2">Description<input name="description"></label>
+  <label>Client<select name="client_id" onchange="this.form.project_id.innerHTML=projectOpts(this.value)">${clientOpts()}</select></label>
+  <label>Project<select name="project_id">${projectOpts()}</select></label>
+  <label class="chk"><input type="checkbox" name="billable"> Billable to client</label>
+  ${paidNow ? `<label>Paid from<select name="paid_from">${acctOpts(a => ["cash", "credit_card"].includes(a.subtype))}</select></label>` : ""}
+  <label>Reference / receipt #<input name="reference"></label></form>
+  <p class="muted">Tip: ad spend you rebill to clients goes to <b>5000 Pass-through Media Spend</b> so it's excluded from net revenue.</p>
+  <div class="row"><button class="b p right" onclick="saveBill()">Save</button></div>`);
+window.saveBill = () => act(async () => { const f = formData($("#billF"));
+  if (f.new_vendor.trim()) f.vendor_id = (await api("/api/vendors", {name: f.new_vendor.trim()})).id;
+  if (!f.vendor_id) throw new Error("Choose or add a vendor");
+  await api("/api/bills", {vendor_id: f.vendor_id, bill_date: f.bill_date, due_date: f.due_date || null, amount_cents: toCents(f.amount),
+    expense_account_code: f.expense_account_code, description: f.description, client_id: f.client_id || null, project_id: f.project_id || null,
+    billable: f.billable, reference: f.reference, paid_from: f.paid_from || null});
+  dlg.close(); render(); }, "Saved");
+window.payBillDlg = (id, bal) => openDlg("Pay bill", `<form class="grid" id="pbF"><label>Date<input type="date" name="date" value="${today()}"></label>
+  <label>Amount<input name="amount" value="${dollars(bal)}"></label><label>Pay from<select name="acct">${acctOpts(a => ["cash", "credit_card"].includes(a.subtype))}</select></label>
+  <label>Reference<input name="ref"></label><button type="button" class="b p" onclick="payBill(${id})">Pay</button></form>`);
+window.payBill = id => act(async () => { const f = formData($("#pbF"));
+  await api(`/api/bills/${id}/pay`, {date: f.date, amount_cents: toCents(f.amount), paid_from_account_code: f.acct, reference: f.ref}); dlg.close(); render(); }, "Bill paid");
+window.voidBill = id => confirm("Void this bill?") && act(async () => { await api(`/api/bills/${id}/void`, {}); render(); }, "Bill voided");
+window.voidBillPay = id => confirm("Void this bill payment?") && act(async () => { await api(`/api/bill-payments/${id}/void`, {}); render(); }, "Payment voided");
+
+// ----- clients / projects / vendors -----
+VIEWS.clients = async () => {
+  page("Clients & Projects", `<button class="b" onclick="projectForm()">+ Project</button><button class="b p" onclick="clientForm()">+ Client</button>`, `
+  <div class="card"><b>Clients</b><div class="wrap"><table><tr><th>Name</th><th>Email</th><th class="n">Monthly retainer</th><th class="n">Terms</th><th>Status</th><th></th></tr>
+  ${REF.clients.map(c => `<tr><td>${esc(c.name)}</td><td>${esc(c.email)}</td><td class="n">${c.retainer_cents ? fmt(c.retainer_cents) : ""}</td><td class="n">${c.payment_terms_days} days</td>
+   <td>${c.is_active ? "active" : pill("inactive")}</td><td class="n"><button class="b" onclick="clientForm(${c.id})">Edit</button></td></tr>`).join("") || '<tr><td colspan=6 class="muted">No clients yet.</td></tr>'}</table></div></div>
+  <div class="card"><b>Projects</b><div class="wrap"><table><tr><th>Client</th><th>Project</th><th class="n">Budget</th><th>Status</th></tr>
+  ${REF.projects.map(p => `<tr><td>${esc(p.client_name)}</td><td>${esc(p.name)}</td><td class="n">${p.budget_cents ? fmt(p.budget_cents) : ""}</td>
+   <td><select onchange="act(()=>api('/api/projects/${p.id}',{status:this.value}),'Updated')">${["active", "completed", "cancelled"].map(s => opt(s, s, p.status)).join("")}</select></td></tr>`).join("") || '<tr><td colspan=4 class="muted">No projects yet.</td></tr>'}</table></div></div>`);
+};
+window.clientForm = id => { const c = REF.clients.find(x => x.id === id) || {payment_terms_days: 15};
+  openDlg(id ? "Edit client" : "New client", `<form class="grid" id="cF"><label>Name<input name="name" value="${esc(c.name || "")}"></label>
+  <label>Billing email<input name="email" value="${esc(c.email || "")}"></label><label>Monthly retainer<input name="retainer" value="${c.retainer_cents ? dollars(c.retainer_cents) : ""}" placeholder="0.00"></label>
+  <label>Payment terms (days)<input name="terms" type="number" min="0" value="${c.payment_terms_days}"></label>
+  <label style="grid-column:1/-1">Billing address<textarea name="address" rows="2">${esc(c.address || "")}</textarea></label>
+  ${id ? `<label class="chk"><input type="checkbox" name="is_active" ${c.is_active ? "checked" : ""}> Active</label>` : ""}</form>
+  <div class="row"><button class="b p right" onclick="saveClient(${id || 0})">Save</button></div>`); };
+window.saveClient = id => act(async () => { const f = formData($("#cF"));
+  const body = {name: f.name, email: f.email, address: f.address, retainer_cents: toCents(f.retainer), payment_terms_days: +f.terms};
+  if (id) await api(`/api/clients/${id}`, {...body, is_active: f.is_active}); else await api("/api/clients", body); dlg.close(); render(); }, "Saved");
+window.projectForm = () => openDlg("New project", `<form class="grid" id="pF"><label>Client<select name="client_id">${clientOpts(null, "— choose —")}</select></label>
+  <label>Project name<input name="name"></label><label>Budget (fee)<input name="budget" placeholder="0.00"></label></form>
+  <div class="row"><button class="b p right" onclick="saveProject()">Save</button></div>`);
+window.saveProject = () => act(async () => { const f = formData($("#pF")); await api("/api/projects", {client_id: f.client_id, name: f.name, budget_cents: toCents(f.budget)}); dlg.close(); render(); }, "Saved");
+VIEWS.vendors = async () => page("Vendors", `<button class="b p" onclick="openDlg('New vendor', '<form class=grid id=vF><label>Name<input name=name></label><label>Email<input name=email></label></form><div class=row><button class=\\'b p right\\' onclick=saveVendor()>Save</button></div>')">+ Vendor</button>`,
+  `<div class="card"><table><tr><th>Name</th><th>Email</th></tr>${REF.vendors.map(v => `<tr><td>${esc(v.name)}</td><td>${esc(v.email)}</td></tr>`).join("") || '<tr><td colspan=2 class="muted">No vendors yet.</td></tr>'}</table></div>`);
+window.saveVendor = () => act(async () => { const f = formData($("#vF")); await api("/api/vendors", f); dlg.close(); render(); }, "Saved");
+
+// ----- banking -----
+VIEWS.banking = async () => {
+  page("Bank Reconciliation", "", `<div class="card"><p class="muted" style="margin-top:0">Match your books to your bank or card statement. Tick each transaction that appears on the statement; you can finish only when the difference is zero.</p>
+  <form class="grid" id="recF"><label>Account<select name="acct">${acctOpts(a => ["cash", "credit_card"].includes(a.subtype))}</select></label>
+  <label>Statement end date<input type="date" name="date" value="${today()}"></label><label>Statement ending balance<input name="bal" placeholder="0.00"></label>
+  <button class="b p" type="button" onclick="loadRec()">Start</button></form></div><div id="recW"></div>`);
+};
+let REC = null;
+window.loadRec = () => act(async () => { const f = formData($("#recF")); const ws = await api(`/api/reconcile?account_code=${encodeURIComponent(f.acct)}&statement_date=${f.date}`);
+  REC = {ws, target: toCents(f.bal), acct: f.acct, date: f.date};
+  $("#recW").innerHTML = `<div class="card"><div class="row"><span>Previously cleared: <b>${fmt(ws.cleared_balance_cents)}</b></span><span>Statement: <b>${fmt(REC.target)}</b></span>
+   <span>Difference: <b id="recDiff"></b></span><button class="b p right" id="recBtn" onclick="finishRec()">Finish reconciliation</button></div>
+   <div class="wrap"><table id="recT"><tr><th><input type="checkbox" onchange="document.querySelectorAll('#recT td input').forEach(c=>c.checked=this.checked);recCalc()"></th><th>Date</th><th>Description</th><th class="n">Amount</th></tr>
+   ${ws.uncleared.map(l => `<tr><td><input type="checkbox" value="${l.id}" data-a="${l.amount_cents}" onchange="recCalc()"></td><td>${l.date}</td><td>${esc(l.entry_memo)}${l.memo ? " — " + esc(l.memo) : ""}</td><td class="n">${fmt(l.amount_cents, {color: 1})}</td></tr>`).join("") || '<tr><td colspan=4 class="muted">No uncleared transactions.</td></tr>'}
+   </table></div></div>`; recCalc(); });
+window.recCalc = () => { const sum = [...document.querySelectorAll("#recT td input:checked")].reduce((s, c) => s + +c.dataset.a, 0);
+  const diff = REC.target - REC.ws.cleared_balance_cents - sum; $("#recDiff").innerHTML = diff ? `<span class="neg">${fmt(diff)}</span>` : `<span style="color:var(--good)">${fmt(0)} ✓</span>`; $("#recBtn").disabled = !!diff; };
+window.finishRec = () => act(async () => { await api("/api/reconcile", {account_code: REC.acct, statement_date: REC.date, statement_balance_cents: REC.target,
+  line_ids: [...document.querySelectorAll("#recT td input:checked")].map(c => +c.value)}); $("#recW").innerHTML = ""; }, "Reconciled");
+
+// ----- journal -----
+VIEWS.journal = async () => {
+  const j = await api("/api/journal?limit=300");
+  page("Journal Entries", `<button class="b p" onclick="jeForm()">+ Journal entry</button>`, `<div class="card"><div class="wrap"><table>
+  <tr><th>#</th><th>Date</th><th>Memo</th><th>Source</th><th>Account</th><th class="n">Debit</th><th class="n">Credit</th><th></th></tr>
+  ${j.map(e => e.lines.map((l, k) => `<tr ${k ? "" : 'style="border-top:2px solid var(--line)"'}>${k ? "<td></td><td></td><td></td><td></td>" :
+   `<td>${e.id}</td><td>${e.date}</td><td>${esc(e.memo)}${e.reversed_by_entry_id ? ` <span class="pill">reversed by #${e.reversed_by_entry_id}</span>` : ""}${e.reverses_entry_id ? ` <span class="pill">reverses #${e.reverses_entry_id}</span>` : ""}</td><td>${esc(e.source_type)}</td>`}
+   <td class="${l.credit_cents ? "indent" : ""}">${esc(l.account_code)} ${esc(l.account_name)}</td><td class="n">${l.debit_cents ? fmt(l.debit_cents) : ""}</td><td class="n">${l.credit_cents ? fmt(l.credit_cents) : ""}</td>
+   <td>${!k && e.source_type === "manual" && !e.reversed_by_entry_id && !e.reverses_entry_id ? `<button class="b d" onclick="revJE(${e.id})">Reverse</button>` : ""}</td></tr>`).join("")).join("") || '<tr><td colspan=8 class="muted">No entries yet.</td></tr>'}
+  </table></div></div>`);
+};
+const jeRow = () => `<tr><td><select name="a">${acctOpts(() => true)}</select></td><td style="width:130px"><input name="d" placeholder="0.00" oninput="jeCalc()"></td>
+  <td style="width:130px"><input name="c" placeholder="0.00" oninput="jeCalc()"></td><td style="width:170px"><select name="cl">${clientOpts()}</select></td><td><input name="m"></td>
+  <td><button class="b d" type="button" onclick="this.closest('tr').remove();jeCalc()">×</button></td></tr>`;
+window.jeForm = () => openDlg("New journal entry", `<form class="grid" id="jeF"><label>Date<input type="date" name="date" value="${today()}"></label><label style="grid-column:span 2">Memo<input name="memo"></label></form>
+  <div class="wrap"><table class="lines" id="jeT"><tr><th>Account</th><th>Debit</th><th>Credit</th><th>Client</th><th>Line memo</th><th></th></tr>${jeRow()}${jeRow()}</table></div>
+  <div class="row" style="margin-top:8px"><button class="b" onclick="$('#jeT').insertAdjacentHTML('beforeend', jeRow())">+ Line</button><span id="jeSum" class="muted"></span><button class="b p right" onclick="saveJE()">Post entry</button></div>`);
+window.jeCalc = () => { try { let d = 0, c = 0; document.querySelectorAll("#jeT tr").forEach((tr, i) => { if (!i) return; d += toCents(tr.querySelector("[name=d]").value); c += toCents(tr.querySelector("[name=c]").value); });
+  $("#jeSum").innerHTML = `Debits ${fmt(d)} · Credits ${fmt(c)} ${d === c && d ? "✓" : `<span class="neg">off by ${fmt(d - c)}</span>`}`; } catch { } };
+window.saveJE = () => act(async () => { const f = formData($("#jeF"));
+  const lines = [...document.querySelectorAll("#jeT tr")].slice(1).map(tr => ({account_code: tr.querySelector("[name=a]").value, debit_cents: toCents(tr.querySelector("[name=d]").value),
+    credit_cents: toCents(tr.querySelector("[name=c]").value), client_id: tr.querySelector("[name=cl]").value || null, memo: tr.querySelector("[name=m]").value})).filter(l => l.debit_cents || l.credit_cents);
+  await api("/api/journal", {date: f.date, memo: f.memo, lines}); dlg.close(); render(); }, "Entry posted");
+window.revJE = id => { const d = prompt("Reversal date (YYYY-MM-DD)", today()); if (d) act(async () => { await api(`/api/journal/${id}/reverse`, {date: d}); render(); }, "Reversed"); };
+
+// ----- accounts -----
+VIEWS.accounts = async () => {
+  const types = await api("/api/account-types"); const tb = await api("/api/reports/trial-balance");
+  const bal = Object.fromEntries(tb.rows.map(r => [r.code, r.balance_cents]));
+  page("Chart of Accounts", `<button class="b p" onclick="acctForm()">+ Account</button>`, `<div class="card"><div class="wrap"><table>
+  <tr><th>Code</th><th>Name</th><th>Type</th><th>Detail type</th><th class="n">Balance</th><th></th></tr>
+  ${Object.keys(types).map(t => `<tr class="head"><td colspan=6>${t[0].toUpperCase() + t.slice(1)}</td></tr>` + REF.accounts.filter(a => a.type === t).map(a => `<tr style="${a.is_active ? "" : "opacity:.5"}">
+   <td><a href="#reports/gl:${a.code}">${esc(a.code)}</a></td><td>${esc(a.name)}</td><td>${a.type}</td><td>${a.subtype.replace(/_/g, " ")}</td><td class="n">${fmt(bal[a.code] || 0, {color: 1})}</td>
+   <td class="n">${a.is_system ? '<span class="muted">system</span>' : `<button class="b" onclick="act(async()=>{await api('/api/accounts/${a.id}',{is_active:${a.is_active ? "false" : "true"}});render()})">${a.is_active ? "Deactivate" : "Activate"}</button>`}</td></tr>`).join("")).join("")}
+  </table></div></div>`);
+  window._types = types;
+};
+window.acctForm = () => openDlg("New account", `<form class="grid" id="aF"><label>Code<input name="code" placeholder="6950"></label><label>Name<input name="name"></label>
+  <label>Type<select name="type" onchange="this.form.subtype.innerHTML=_types[this.value].map(s=>opt(s,s.replace(/_/g,' '))).join('')">${Object.keys(_types).map(t => opt(t, t)).join("")}</select></label>
+  <label>Detail type<select name="subtype">${_types.asset.map(s => opt(s, s.replace(/_/g, " "))).join("")}</select></label></form>
+  <div class="note">Detail type drives the reports: <b>passthrough cost</b> is subtracted to get net revenue (AGI); <b>cogs</b> = direct client costs; <b>opex</b> = overhead.</div>
+  <div class="row"><button class="b p right" onclick="act(async()=>{await api('/api/accounts',formData($('#aF')));dlg.close();render()},'Account added')">Save</button></div>`);
+
+// ----- reports -----
+const REPORTS = {pnl: "Profit & Loss", bs: "Balance Sheet", tb: "Trial Balance", ar: "A/R Aging", ap: "A/P Aging", cp: "Client Profitability", pp: "Project Profitability", gl: "General Ledger"};
+VIEWS.reports = async (arg) => {
+  const [r, glAcct] = (arg || "pnl").split(":"); const fy = (() => { const m = +REF.settings.fiscal_year_start_month, d = new Date(); let y = d.getFullYear(); if (d.getMonth() + 1 < m) y--; return `${y}-${String(m).padStart(2, "0")}-01`; })();
+  const ranged = ["pnl", "cp", "pp", "gl"].includes(r);
+  page("Reports", `<button class="b" onclick="tableCSV($('#rep table'),'${r}')">Export CSV</button><button class="b" onclick="print()">Print / PDF</button>`, `
+  <div class="tabs noprint">${Object.entries(REPORTS).map(([k, v]) => `<button class="b ${k === r ? "p" : ""}" onclick="location.hash='reports/${k}'">${v}</button>`).join("")}</div>
+  <div class="card noprint"><form class="row" id="rF" onsubmit="event.preventDefault();runReport('${r}')">
+   ${r === "gl" ? `<label>Account<select name="acct">${acctOpts(() => true, glAcct || "1000")}</select></label>` : ""}
+   ${ranged ? `<label>From<input type="date" name="start" value="${fy}"></label><label>To<input type="date" name="end" value="${today()}"></label>` : `<label>As of<input type="date" name="as_of" value="${today()}"></label>`}
+   ${ranged ? `<button type="button" class="b" onclick="setRange('month')">This month</button><button type="button" class="b" onclick="setRange('lastmonth')">Last month</button><button type="button" class="b" onclick="setRange('fy')">This FY</button>` : ""}
+   <button class="b p">Run</button></form></div><div class="card" id="rep"></div>`);
+  window._fy = fy; runReport(r);
+};
+window.setRange = k => { const f = $("#rF"); const d = new Date(); if (k === "month") { f.start.value = monthStart(); f.end.value = today(); }
+  if (k === "lastmonth") { const s = new Date(d.getFullYear(), d.getMonth() - 1, 1), e = new Date(d.getFullYear(), d.getMonth(), 0); const iso = x => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`; f.start.value = iso(s); f.end.value = iso(e); }
+  if (k === "fy") { f.start.value = _fy; f.end.value = today(); } runReport(location.hash.split("/")[1]?.split(":")[0] || "pnl"); };
+const amtRow = (label, c, cls = "", indent) => `<tr class="${cls}"><td class="${indent ? "indent" : ""}">${esc(label)}</td><td class="n">${fmt(c, {color: 1})}</td></tr>`;
+const pct = p => p === null || p === undefined ? "—" : p + "%";
+window.runReport = r => act(async () => { const f = formData($("#rF")); const q = new URLSearchParams(f).toString(); const R = $("#rep"); const co = esc(REF.settings.company_name);
+  const head = (t, sub) => `<h3 style="margin:0">${co} — ${t}</h3><p class="muted" style="margin-top:2px">${sub}</p>`;
+  if (r === "pnl") { const p = await api(`/api/reports/pnl?start=${f.start}&end=${f.end}`);
+    const sec = (t, rows) => rows.map(x => amtRow(`${x.code} ${x.name}`, x.amount_cents, "", 1)).join("");
+    R.innerHTML = head("Profit & Loss", `${p.start} to ${p.end}`) + `<div class="wrap"><table>
+     <tr class="head"><td colspan=2>Revenue</td></tr>${sec("", p.revenue)}${amtRow("Gross billings", p.gross_billings_cents, "sub")}
+     <tr class="head"><td colspan=2>Less: pass-through costs</td></tr>${sec("", p.passthrough)}
+     ${amtRow("Net revenue (agency gross income)", p.net_revenue_cents, "total")}
+     <tr class="head"><td colspan=2>Direct client costs</td></tr>${sec("", p.direct_costs)}${amtRow("Total direct costs", p.direct_costs_cents, "sub")}
+     ${amtRow(`Gross profit (${pct(p.gross_margin_pct)} of net revenue)`, p.gross_profit_cents, "total")}
+     <tr class="head"><td colspan=2>Operating expenses</td></tr>${sec("", p.opex)}${amtRow("Total operating expenses", p.opex_cents, "sub")}
+     ${amtRow(`Operating income (${pct(p.operating_margin_pct)})`, p.operating_income_cents, "total")}
+     ${p.other.length ? `<tr class="head"><td colspan=2>Other income / expense</td></tr>${sec("", p.other)}` : ""}
+     ${amtRow(`Net income (${pct(p.net_margin_pct)} of net revenue)`, p.net_income_cents, "total")}</table></div>
+     <div class="note">Agencies are measured on <b>net revenue</b> (billings minus pass-through media), not gross billings. Margins here are % of net revenue.</div>`; }
+  if (r === "bs") { const b = await api(`/api/reports/balance-sheet?as_of=${f.as_of}`); const sec = rows => rows.map(x => amtRow(`${x.code} ${x.name}`.trim(), x.amount_cents, "", 1)).join("");
+    R.innerHTML = head("Balance Sheet", `As of ${b.as_of} · fiscal year began ${b.fiscal_year_start}`) + `<div class="wrap"><table>
+     <tr class="head"><td colspan=2>Assets</td></tr>${sec(b.assets)}${amtRow("Total assets", b.total_assets_cents, "total")}
+     <tr class="head"><td colspan=2>Liabilities</td></tr>${sec(b.liabilities)}${amtRow("Total liabilities", b.total_liabilities_cents, "sub")}
+     <tr class="head"><td colspan=2>Equity</td></tr>${sec(b.equity)}${amtRow("Total equity", b.total_equity_cents, "sub")}
+     ${amtRow("Total liabilities & equity", b.total_liabilities_cents + b.total_equity_cents, "total")}</table></div>
+     <p>${b.balanced ? '<span style="color:var(--good)">✓ Balanced</span>' : '<span class="neg">✗ OUT OF BALANCE — investigate</span>'}</p>`; }
+  if (r === "tb") { const t = await api(`/api/reports/trial-balance?as_of=${f.as_of}`);
+    R.innerHTML = head("Trial Balance", `As of ${t.as_of}`) + `<div class="wrap"><table><tr><th>Code</th><th>Account</th><th class="n">Debit</th><th class="n">Credit</th></tr>
+     ${t.rows.map(x => `<tr class="click" onclick="location.hash='reports/gl:${x.code}'"><td>${x.code}</td><td>${esc(x.name)}</td><td class="n">${x.tb_debit_cents ? fmt(x.tb_debit_cents) : ""}</td><td class="n">${x.tb_credit_cents ? fmt(x.tb_credit_cents) : ""}</td></tr>`).join("")}
+     <tr class="total"><td></td><td>Total</td><td class="n">${fmt(t.total_debit_cents)}</td><td class="n">${fmt(t.total_credit_cents)}</td></tr></table></div>
+     <p>${t.balanced ? '<span style="color:var(--good)">✓ Debits equal credits</span>' : '<span class="neg">✗ Out of balance</span>'}</p>`; }
+  if (r === "ar" || r === "ap") { const a = await api(`/api/reports/${r}-aging?as_of=${f.as_of}`); const key = r === "ar" ? "client" : "vendor"; const rows = a["by_" + key];
+    const B = ["current", "1_30", "31_60", "61_90", "over_90"], L = ["Current", "1–30", "31–60", "61–90", "90+"];
+    R.innerHTML = head(r === "ar" ? "Accounts Receivable Aging" : "Accounts Payable Aging", `As of ${a.as_of} · days past due`) + `<div class="wrap"><table><tr><th>${key[0].toUpperCase() + key.slice(1)}</th>${L.map(l => `<th class="n">${l}</th>`).join("")}<th class="n">Total</th></tr>
+     ${rows.map(x => `<tr><td>${esc(x[key])}</td>${B.map(b => `<td class="n">${x[b] ? fmt(x[b]) : ""}</td>`).join("")}<td class="n"><b>${fmt(x.total)}</b></td></tr>`).join("") || '<tr><td colspan=7 class="muted">Nothing outstanding.</td></tr>'}
+     <tr class="total"><td>Total</td>${B.map(b => `<td class="n">${fmt(a.totals[b])}</td>`).join("")}<td class="n">${fmt(a.totals.total)}</td></tr></table></div>
+     <h4>Detail</h4><div class="wrap"><table><tr><th>${r === "ar" ? "Invoice" : "Bill"}</th><th>${key}</th><th>Due</th><th class="n">Days late</th><th class="n">Balance</th></tr>
+     ${a.items.map(i => `<tr ${r === "ar" ? `class="click" onclick="showInvoice(${i.invoice_id})"` : ""}><td>${esc(i.number || i.description)}</td><td>${esc(i[key])}</td><td>${i.due_date}</td><td class="n">${i.days_overdue}</td><td class="n">${fmt(i.balance_cents)}</td></tr>`).join("")}</table></div>`; }
+  if (r === "cp") { const c = await api(`/api/reports/client-profitability?start=${f.start}&end=${f.end}`);
+    R.innerHTML = head("Client Profitability", `${c.start} to ${c.end}`) + `<div class="wrap"><table><tr><th>Client</th><th class="n">Gross billings</th><th class="n">Pass-through</th><th class="n">Net revenue</th><th class="n">Direct costs</th><th class="n">Contribution</th><th class="n">Margin</th></tr>
+     ${c.rows.map(x => `<tr><td>${esc(x.client)}</td><td class="n">${fmt(x.gross_billings_cents)}</td><td class="n">${fmt(x.passthrough_cents)}</td><td class="n">${fmt(x.net_revenue_cents)}</td><td class="n">${fmt(x.direct_costs_cents)}</td><td class="n">${fmt(x.contribution_cents, {color: 1})}</td><td class="n">${pct(x.margin_pct)}</td></tr>`).join("") || '<tr><td colspan=7 class="muted">No client-tagged activity.</td></tr>'}</table></div>
+     <div class="note">⚠ ${esc(c.note)} Track staff hours per client if you want true profitability.</div>`; }
+  if (r === "pp") { const c = await api(`/api/reports/project-profitability?start=${f.start}&end=${f.end}`);
+    R.innerHTML = head("Project Profitability", `${c.start} to ${c.end}`) + `<div class="wrap"><table><tr><th>Client</th><th>Project</th><th>Status</th><th class="n">Budget</th><th class="n">Billed</th><th class="n">% of budget</th><th class="n">Costs</th><th class="n">Contribution</th><th class="n">Margin</th></tr>
+     ${c.rows.map(x => `<tr><td>${esc(x.client)}</td><td>${esc(x.project)}</td><td>${x.status}</td><td class="n">${x.budget_cents ? fmt(x.budget_cents) : ""}</td><td class="n">${fmt(x.gross_billings_cents)}</td><td class="n">${pct(x.budget_billed_pct)}</td><td class="n">${fmt(x.costs_cents)}</td><td class="n">${fmt(x.contribution_cents, {color: 1})}</td><td class="n">${pct(x.margin_pct)}</td></tr>`).join("") || '<tr><td colspan=9 class="muted">No projects.</td></tr>'}</table></div>`; }
+  if (r === "gl") { const g = await api(`/api/reports/general-ledger?account_code=${encodeURIComponent(f.acct)}&start=${f.start}&end=${f.end}`);
+    R.innerHTML = head(`General Ledger — ${esc(g.account.code)} ${esc(g.account.name)}`, `${g.start} to ${g.end}`) + `<div class="wrap"><table><tr><th>Date</th><th>Entry</th><th>Description</th><th>Client</th><th class="n">Debit</th><th class="n">Credit</th><th class="n">Balance</th></tr>
+     <tr class="sub"><td></td><td></td><td>Opening balance</td><td></td><td></td><td></td><td class="n">${fmt(g.opening_balance_cents, {color: 1})}</td></tr>
+     ${g.lines.map(l => `<tr><td>${l.date}</td><td>#${l.entry_id}</td><td>${esc(l.entry_memo)}${l.memo && l.memo !== l.entry_memo ? " — " + esc(l.memo) : ""}</td><td>${esc(l.client_name || "")}</td><td class="n">${l.debit_cents ? fmt(l.debit_cents) : ""}</td><td class="n">${l.credit_cents ? fmt(l.credit_cents) : ""}</td><td class="n">${fmt(l.running_balance_cents, {color: 1})}</td></tr>`).join("")}
+     <tr class="total"><td></td><td></td><td>Closing balance</td><td></td><td></td><td></td><td class="n">${fmt(g.closing_balance_cents, {color: 1})}</td></tr></table></div>`; }
+});
+
+// ----- settings -----
+VIEWS.settings = async () => { const s = REF.settings;
+  page("Settings", "", `<div class="card"><form class="grid" id="sF">
+  <label>Company name<input name="company_name" value="${esc(s.company_name)}"></label>
+  <label>Currency (ISO code)<input name="currency" value="${esc(s.currency)}" maxlength="3"></label>
+  <label>Fiscal year starts (month 1–12)<input name="fiscal_year_start_month" type="number" min="1" max="12" value="${esc(s.fiscal_year_start_month)}"></label>
+  <label>Default tax rate %<input name="tax_pct" value="${+s.default_tax_rate_bp / 100}"></label>
+  <label>Invoice prefix<input name="invoice_prefix" value="${esc(s.invoice_prefix)}"></label>
+  <label>Next invoice number<input name="next_invoice_number" type="number" min="1" value="${esc(s.next_invoice_number)}"></label>
+  <label>Books locked through<input type="date" name="lock_date" value="${esc(s.lock_date)}"></label></form>
+  <div class="note">The <b>lock date</b> closes a period: nothing can be posted, edited or voided on or before it. Set it after you file a return or your accountant signs off on a month.</div>
+  <div class="row"><button class="b p right" onclick="saveSettings()">Save settings</button></div></div>`); };
+window.saveSettings = () => act(async () => { const f = formData($("#sF")); f.default_tax_rate_bp = pctToBp(f.tax_pct); delete f.tax_pct; f.currency = f.currency.toUpperCase();
+  try { new Intl.NumberFormat(undefined, {style: "currency", currency: f.currency}); } catch { throw new Error("Unknown currency code"); }
+  await api("/api/settings", f); render(); }, "Settings saved");
+
+render();
+</script>
+</body>
+</html>
