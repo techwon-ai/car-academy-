@@ -11,7 +11,8 @@ periods.
 
 import contextlib
 import datetime as dt
-import sqlite3
+
+import db
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 
@@ -94,6 +95,25 @@ DEFAULT_SETTINGS = {
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS app_secrets (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY,
+  email TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL DEFAULT '',
+  password_hash TEXT NOT NULL,
+  is_admin INTEGER NOT NULL DEFAULT 0,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS login_attempts (
+  id INTEGER PRIMARY KEY,
+  email TEXT NOT NULL,
+  ip TEXT NOT NULL DEFAULT '',
+  at INTEGER NOT NULL,
+  success INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS accounts (
   id INTEGER PRIMARY KEY,
@@ -146,6 +166,7 @@ CREATE TABLE IF NOT EXISTS journal_entries (
   source_id INTEGER,
   reverses_entry_id INTEGER REFERENCES journal_entries(id),
   reversed_by_entry_id INTEGER REFERENCES journal_entries(id),
+  created_by TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -241,37 +262,34 @@ CREATE TABLE IF NOT EXISTS bill_payments (
 # Connection, transactions, settings
 # --------------------------------------------------------------------------
 
-def connect(path):
-    conn = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA busy_timeout = 5000")
-    if path != ":memory:":
-        conn.execute("PRAGMA journal_mode = WAL")
-    return conn
+def connect(target):
+    """target: SQLite file path / ':memory:', or a postgres:// URL."""
+    return db.connect(target)
 
 
 @contextlib.contextmanager
 def tx(conn):
-    """Write transaction. BEGIN IMMEDIATE takes the write lock up front so
+    """Write transaction. The write lock is taken up front so
     read-then-write sequences (e.g. invoice numbering) cannot race."""
     if conn.in_transaction:  # already inside a transaction: join it
         yield conn
         return
-    conn.execute("BEGIN IMMEDIATE")
+    conn.begin()
     try:
         yield conn
     except BaseException:
-        conn.execute("ROLLBACK")
+        conn.rollback()
         raise
-    conn.execute("COMMIT")
+    conn.commit()
 
 
 def init_db(conn):
     conn.executescript(SCHEMA)
+    if "created_by" not in conn.columns("journal_entries"):  # books created before logins existed
+        conn.execute("ALTER TABLE journal_entries ADD COLUMN created_by TEXT")
     with tx(conn):
         for k, v in DEFAULT_SETTINGS.items():
-            conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)", (k, v))
+            conn.execute("INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING", (k, v))
         if conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 0:
             conn.executemany(
                 "INSERT INTO accounts(code, name, type, subtype, is_system) VALUES (?,?,?,?,?)",
@@ -425,8 +443,9 @@ def _post(conn, date, memo, lines, source_type="manual", source_id=None, reverse
     if total_d != total_c:
         raise LedgerError(f"Entry is out of balance: debits {total_d} != credits {total_c} (cents)")
     cur = conn.execute(
-        "INSERT INTO journal_entries(date, memo, source_type, source_id, reverses_entry_id) VALUES (?,?,?,?,?)",
-        (date, str(memo or ""), source_type, source_id, reverses))
+        "INSERT INTO journal_entries(date, memo, source_type, source_id, reverses_entry_id, created_by)"
+        " VALUES (?,?,?,?,?,?)",
+        (date, str(memo or ""), source_type, source_id, reverses, getattr(conn, "user", None)))
     entry_id = cur.lastrowid
     conn.executemany(
         "INSERT INTO journal_lines(entry_id, account_id, debit_cents, credit_cents, client_id, project_id, memo)"
@@ -512,7 +531,7 @@ def create_account(conn, code, name, type, subtype):
         try:
             cur = conn.execute("INSERT INTO accounts(code, name, type, subtype) VALUES (?,?,?,?)",
                                (code, name, type, subtype))
-        except sqlite3.IntegrityError:
+        except db.IntegrityError:
             raise LedgerError(f"Account code {code} already exists") from None
         return cur.lastrowid
 
@@ -545,7 +564,7 @@ def create_client(conn, name, email="", address="", retainer_cents=0, payment_te
                 (name, str(email or ""), str(address or ""),
                  _cents(retainer_cents or 0, "retainer_cents", allow_zero=True),
                  _int(payment_terms_days, "payment_terms_days"))).lastrowid
-        except sqlite3.IntegrityError:
+        except db.IntegrityError:
             raise LedgerError(f"Client '{name}' already exists") from None
 
 
@@ -583,7 +602,7 @@ def create_project(conn, client_id, name, budget_cents=0):
         try:
             return conn.execute("INSERT INTO projects(client_id, name, budget_cents) VALUES (?,?,?)",
                                 (c["id"], name, _cents(budget_cents or 0, "budget_cents", allow_zero=True))).lastrowid
-        except sqlite3.IntegrityError:
+        except db.IntegrityError:
             raise LedgerError(f"Project '{name}' already exists for this client") from None
 
 
@@ -610,7 +629,7 @@ def create_vendor(conn, name, email=""):
     with tx(conn):
         try:
             return conn.execute("INSERT INTO vendors(name, email) VALUES (?,?)", (name, str(email or ""))).lastrowid
-        except sqlite3.IntegrityError:
+        except db.IntegrityError:
             raise LedgerError(f"Vendor '{name}' already exists") from None
 
 

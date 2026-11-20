@@ -1,0 +1,6 @@
+*.db
+*.db-*
+backups/
+__pycache__/
+test_*.py
+demo.py

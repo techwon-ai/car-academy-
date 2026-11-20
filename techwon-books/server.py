@@ -5,12 +5,19 @@
     python3 server.py demo                 # create demo.db filled with sample agency data
     python3 server.py serve [--db books.db] [--port 8080]
     python3 server.py backup backups/books-2026-11-20.db
+    python3 server.py create-user you@example.com --admin   # online mode only
 
-There is no login. The server binds to 127.0.0.1 only and rejects requests whose
-Host/Origin is not localhost, so other machines and malicious web pages can't reach it.
+Local mode (default): SQLite file, no login. The server binds to 127.0.0.1 and
+rejects requests whose Host/Origin is not localhost.
+
+Online mode (DATABASE_URL set, e.g. on Vercel): Postgres, login required for
+everything, admins manage users and settings. TECHWON_REQUIRE_LOGIN=1 turns on
+logins locally too.
 """
 
 import argparse
+import getpass
+import http.cookies
 import json
 import os
 import re
@@ -22,6 +29,7 @@ from urllib.parse import parse_qs, urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import auth  # noqa: E402
 import ledger as L  # noqa: E402
 
 ROUTES = []
@@ -43,7 +51,9 @@ def _ids(body, *keys):
 @route("GET", "/api/settings")
 def _(c, q, b): return L.get_settings(c)
 @route("POST", "/api/settings")
-def _(c, q, b): return L.update_settings(c, b)
+def _(c, q, b):
+    _admin(c)
+    return L.update_settings(c, b)
 
 @route("GET", "/api/accounts")
 def _(c, q, b): return L.list_accounts(c)
@@ -142,6 +152,33 @@ def _(c, q, b):
     return {"id": L.reconcile(c, b.get("account_code"), b.get("statement_date"),
                               b.get("statement_balance_cents"), b.get("line_ids"))}
 
+# ---- users (online mode) --------------------------------------------------
+
+def _admin(c):
+    u = getattr(c, "auth_user", None)
+    if Handler.require_login and not (u and u["is_admin"]):
+        raise Forbidden("Only admins can do that")
+
+
+@route("GET", "/api/users")
+def _(c, q, b):
+    _admin(c)
+    return auth.list_users(c)
+@route("POST", "/api/users")
+def _(c, q, b):
+    _admin(c)
+    return {"id": auth.create_user(c, b.get("email"), b.get("password"), b.get("name", ""), bool(b.get("is_admin")))}
+@route("POST", r"/api/users/(\d+)")
+def _(c, q, b, uid):
+    _admin(c)
+    return auth.update_user(c, c.auth_user, uid, **_ids(b, "is_active", "is_admin", "password", "name"))
+@route("POST", "/api/me/password")
+def _(c, q, b):
+    if not getattr(c, "auth_user", None):
+        raise L.LedgerError("Passwords are only used when login is enabled")
+    return auth.change_own_password(c, c.auth_user, b.get("current_password"), b.get("new_password"))
+
+
 # ---- reports --------------------------------------------------------------
 
 @route("GET", "/api/dashboard")
@@ -164,17 +201,32 @@ def _(c, q, b): return L.project_profitability(c, q.get("start"), q.get("end"))
 def _(c, q, b): return L.general_ledger(c, q.get("account_code"), q.get("start"), q.get("end"))
 
 
+class Forbidden(L.LedgerError):
+    pass
+
+
+class Unauthorized(L.LedgerError):
+    pass
+
+
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
+PUBLIC_ROUTES = {("GET", "/api/session"), ("POST", "/api/login"), ("POST", "/api/logout")}
+DB_URL = os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_URL")
+_initialized = set()
 
 
 class Handler(BaseHTTPRequestHandler):
-    db_path = "books.db"
-    server_version = "TechwonBooks/1.0"
+    db_target = DB_URL or os.path.join(HERE, "books.db")
+    require_login = bool(DB_URL) or os.environ.get("TECHWON_REQUIRE_LOGIN") == "1"
+    server_version = "TechwonBooks/1.1"
 
     def log_message(self, fmt, *args):
         sys.stderr.write("%s %s\n" % (self.command, fmt % args))
 
-    def _send(self, status, payload, ctype="application/json"):
+    def _https(self):
+        return self.headers.get("X-Forwarded-Proto", "").split(",")[0].strip() == "https"
+
+    def _send(self, status, payload, ctype="application/json", cookie=None):
         data = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
         self.send_response(status)
         self.send_header("Content-Type", ctype)
@@ -182,23 +234,70 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "same-origin")
+        self.send_header("Content-Security-Policy",
+                         "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+                         "img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+        if self._https():
+            self.send_header("Strict-Transport-Security", "max-age=31536000")
+        if cookie is not None:
+            self.send_header("Set-Cookie", cookie)
         self.end_headers()
         self.wfile.write(data)
 
-    def _host_ok(self):
-        host = (self.headers.get("Host") or "").rsplit(":", 1)[0]
-        if host not in LOCAL_HOSTS:
-            return False
-        origin = self.headers.get("Origin")
-        if origin:
-            o = urlparse(origin).hostname or ""
-            if o not in {"localhost", "127.0.0.1", "::1"}:
+    def _cookie(self, value, max_age):
+        flags = "; Secure" if self._https() else ""
+        return f"{auth.COOKIE}={value}; Max-Age={max_age}; Path=/; HttpOnly; SameSite=Strict{flags}"
+
+    def _request_ok(self, method):
+        if not self.require_login:  # local, no-login mode: only this computer may connect
+            host = (self.headers.get("Host") or "").rsplit(":", 1)[0]
+            if host not in LOCAL_HOSTS:
                 return False
+            origin = self.headers.get("Origin")
+            return not origin or (urlparse(origin).hostname or "") in {"localhost", "127.0.0.1", "::1"}
+        # online: state-changing requests must come from our own page
+        origin = self.headers.get("Origin")
+        if method == "POST" and origin and urlparse(origin).netloc != self.headers.get("Host"):
+            return False
         return True
 
+    def _open(self):
+        conn = L.connect(self.db_target)
+        if self.db_target not in _initialized:
+            L.init_db(conn)
+            if self.require_login:
+                auth.bootstrap_admin(conn)
+            _initialized.add(self.db_target)
+        return conn
+
+    def _client_ip(self):
+        fwd = self.headers.get("X-Forwarded-For")
+        return fwd.split(",")[0].strip() if fwd else self.client_address[0]
+
+    def _session_user(self, conn):
+        jar = http.cookies.SimpleCookie()
+        try:
+            jar.load(self.headers.get("Cookie") or "")
+        except http.cookies.CookieError:
+            return None
+        return auth.read_session(conn, jar[auth.COOKIE].value) if auth.COOKIE in jar else None
+
+    def _auth_routes(self, conn, method, path, body):
+        if path == "/api/session":
+            u = self._session_user(conn) if self.require_login else None
+            return 200, {"login_required": self.require_login, "user": auth._public(u) if u else None,
+                         "has_users": bool(auth.user_count(conn)) if self.require_login else True}, None
+        if path == "/api/logout":
+            return 200, {"ok": True}, self._cookie("", 0)
+        if not self.require_login:
+            return 400, {"error": "Login is not enabled on this server"}, None
+        u = auth.login(conn, body.get("email"), body.get("password"), self._client_ip())
+        return 200, {"user": auth._public(u)}, self._cookie(auth.make_session(conn, u), auth.SESSION_SECONDS)
+
     def _dispatch(self, method):
-        if not self._host_ok():
-            return self._send(403, {"error": "Forbidden: Techwon Books only accepts local requests"})
+        if not self._request_ok(method):
+            return self._send(403, {"error": "Forbidden"})
         url = urlparse(self.path)
         if method == "GET" and url.path in ("/", "/index.html"):
             with open(os.path.join(HERE, "index.html"), "rb") as f:
@@ -217,23 +316,48 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "Invalid JSON"})
             if not isinstance(body, dict):
                 return self._send(400, {"error": "JSON body must be an object"})
-        for m, rx, fn in ROUTES:
-            match = rx.match(url.path)
-            if m == method and match:
-                conn = L.connect(self.db_path)
-                try:
-                    result = fn(conn, query, body, *match.groups())
-                    return self._send(200, result if result is not None else {"ok": True})
-                except L.LedgerError as e:
-                    return self._send(400, {"error": str(e)})
-                except (TypeError, sqlite3.IntegrityError) as e:
-                    return self._send(400, {"error": f"Invalid request: {e}"})
-                except Exception:
-                    traceback.print_exc()
-                    return self._send(500, {"error": "Internal error - see server log"})
-                finally:
-                    conn.close()
-        self._send(404, {"error": "Not found"})
+        handler = None
+        if (method, url.path) not in PUBLIC_ROUTES:
+            for m, rx, fn in ROUTES:
+                match = rx.match(url.path)
+                if m == method and match:
+                    handler = (fn, match.groups())
+                    break
+            if not handler:
+                return self._send(404, {"error": "Not found"})
+        try:
+            conn = self._open()
+        except Exception:
+            traceback.print_exc()
+            return self._send(503, {"error": "Database unavailable - try again shortly"})
+        try:
+            if not handler:
+                status, payload, cookie = self._auth_routes(conn, method, url.path, body)
+                return self._send(status, payload, cookie=cookie)
+            conn.auth_user = None
+            if self.require_login:
+                user = self._session_user(conn)
+                if not user:
+                    raise Unauthorized("Please sign in")
+                conn.auth_user, conn.user = user, user["email"]
+            fn, groups = handler
+            result = fn(conn, query, body, *groups)
+            return self._send(200, result if result is not None else {"ok": True})
+        except Unauthorized as e:
+            return self._send(401, {"error": str(e)})
+        except Forbidden as e:
+            return self._send(403, {"error": str(e)})
+        except auth.TooManyAttempts as e:
+            return self._send(429, {"error": str(e)})
+        except L.LedgerError as e:
+            return self._send(400, {"error": str(e)})
+        except (TypeError, *L.db.IntegrityError) as e:
+            return self._send(400, {"error": f"Invalid request: {e}"})
+        except Exception:
+            traceback.print_exc()
+            return self._send(500, {"error": "Internal error - see server log"})
+        finally:
+            conn.close()
 
     def do_GET(self):
         self._dispatch("GET")
@@ -245,17 +369,36 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     ap = argparse.ArgumentParser(description="Techwon Books")
     sub = ap.add_subparsers(dest="cmd", required=True)
+    default_db = DB_URL or os.path.join(HERE, "books.db")
     s = sub.add_parser("serve")
-    s.add_argument("--db", default=os.path.join(HERE, "books.db"))
+    s.add_argument("--db", default=default_db)
     s.add_argument("--port", type=int, default=8080)
     i = sub.add_parser("init")
-    i.add_argument("--db", default=os.path.join(HERE, "books.db"))
+    i.add_argument("--db", default=default_db)
     d = sub.add_parser("demo")
     d.add_argument("--db", default=os.path.join(HERE, "demo.db"))
     b = sub.add_parser("backup")
     b.add_argument("dest")
     b.add_argument("--db", default=os.path.join(HERE, "books.db"))
+    u = sub.add_parser("create-user", help="add a login (uses DATABASE_URL, or --db)")
+    u.add_argument("email")
+    u.add_argument("--name", default="")
+    u.add_argument("--admin", action="store_true")
+    u.add_argument("--db", default=default_db)
     a = ap.parse_args()
+
+    if a.cmd == "create-user":
+        pw = getpass.getpass("Password (12+ characters): ")
+        if pw != getpass.getpass("Repeat password: "):
+            sys.exit("Passwords don't match")
+        conn = L.connect(a.db)
+        L.init_db(conn)
+        try:
+            auth.create_user(conn, a.email, pw, a.name, a.admin)
+        except L.LedgerError as e:
+            sys.exit(str(e))
+        print(f"Created {'admin' if a.admin else 'user'} {a.email}")
+        return
 
     if a.cmd == "backup":
         if not os.path.exists(a.db):
@@ -278,9 +421,11 @@ def main():
     if a.cmd == "init":
         print(f"Initialized {a.db}")
         return
-    Handler.db_path = a.db
+    Handler.db_target = a.db
     httpd = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
-    print(f"Techwon Books running at http://localhost:{a.port}  (db: {a.db})  Ctrl+C to stop")
+    shown = "Postgres" if str(a.db).startswith("postgres") else a.db
+    print(f"Techwon Books running at http://localhost:{a.port}  (db: {shown}, "
+          f"login {'required' if Handler.require_login else 'off'})  Ctrl+C to stop")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

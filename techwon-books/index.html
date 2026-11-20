@@ -8,7 +8,9 @@
 :root{--bg:#f6f7f9;--panel:#fff;--ink:#16191d;--muted:#5d6670;--line:#e2e5e9;--accent:#1f6feb;--accent-ink:#fff;
 --good:#1a7f37;--bad:#c62828;--warn:#9a6700;--chip:#eef1f4;--side:#101418;--side-ink:#c9d1d9;--side-active:#1f6feb}
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#0d1117;--panel:#161b22;--ink:#e6edf3;--muted:#8b949e;
---line:#30363d;--accent:#4c8dff;--good:#3fb950;--bad:#f85149;--warn:#d29922;--chip:#21262d;--side:#010409}}
+--line:#30363d;--accent:#4c8dff;--good:#3fb950;--bad:#f85149;--warn:#d29922;--chip:#21262d;--side:#010409;color-scheme:dark}}
+:root[data-theme=dark]{--bg:#0d1117;--panel:#161b22;--ink:#e6edf3;--muted:#8b949e;
+--line:#30363d;--accent:#4c8dff;--good:#3fb950;--bad:#f85149;--warn:#d29922;--chip:#21262d;--side:#010409;color-scheme:dark}
 *{box-sizing:border-box}body{margin:0;font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--ink)}
 .app{display:flex;min-height:100vh}
 nav{width:210px;flex:none;background:var(--side);color:var(--side-ink);padding:16px 10px;position:sticky;top:0;height:100vh;overflow:auto}
@@ -49,6 +51,10 @@ dialog .db{padding:16px 18px;max-height:75vh;overflow:auto}
 .tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
 @media (max-width:760px){.app{flex-direction:column}nav{width:auto;height:auto;position:static;display:flex;flex-wrap:wrap;gap:2px;padding:8px}
 nav h1{width:100%;margin:4px 6px 8px}nav button{width:auto}main{padding:16px}}
+.login{max-width:380px;margin:12vh auto;padding:0 16px}.login .card{padding:24px}.login h1{margin:0 0 4px;font-size:22px}
+.login form{display:flex;flex-direction:column;gap:12px;margin-top:16px}
+.who{margin-top:18px;padding:10px;border-top:1px solid #ffffff22;font-size:12px;color:#8b949e;word-break:break-all}
+.who button{padding:6px 10px;font-size:12px}
 @media print{nav,header.top .b,.noprint{display:none!important}main{padding:0}.card{border:0}}
 </style>
 </head>
@@ -80,6 +86,7 @@ function toast(msg, err) { const t = $("#toast"); t.textContent = msg; t.classNa
 async function api(path, body) {
   const r = await fetch(path, body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
   const j = await r.json().catch(() => ({error: "Bad response"}));
+  if (r.status === 401 && path !== "/api/login") { showLogin("Your session ended. Please sign in again."); throw new Error("Please sign in"); }
   if (!r.ok) throw new Error(j.error || r.statusText); return j; }
 async function act(fn, okMsg) { try { const r = await fn(); if (okMsg) toast(okMsg); return r; } catch (e) { toast(e.message, true); throw e; } }
 const pill = s => `<span class="pill ${esc(s)}">${esc(s)}</span>`;
@@ -107,17 +114,57 @@ const projectOpts = (clientId, sel) => opt("", "— none —") + REF.projects.fi
 // ---------- routing ----------
 const PAGES = {dashboard: "Dashboard", invoices: "Invoices", bills: "Bills & Expenses", clients: "Clients & Projects",
   vendors: "Vendors", banking: "Bank Reconciliation", journal: "Journal Entries", accounts: "Chart of Accounts",
-  reports: "Reports", settings: "Settings"};
-function nav() { $("#nav").innerHTML = $("#nav").querySelector("h1").outerHTML + Object.entries(PAGES).map(([k, v]) =>
-  `<button data-p="${k}" class="${(location.hash.slice(1) || "dashboard").split("/")[0] === k ? "active" : ""}">${v}</button>`).join("");
-  $("#nav").querySelectorAll("button").forEach(b => b.onclick = () => location.hash = b.dataset.p); }
-async function render() { nav(); const [p, arg] = (location.hash.slice(1) || "dashboard").split("/");
+  reports: "Reports", settings: "Settings", users: "Users"};
+let SESSION = {login_required: false, user: null};
+function nav() { const pages = Object.entries(PAGES).filter(([k]) => k !== "users" || SESSION.user?.is_admin);
+  $("#nav").innerHTML = $("#nav").querySelector("h1").outerHTML + pages.map(([k, v]) =>
+  `<button data-p="${k}" class="${(location.hash.slice(1) || "dashboard").split("/")[0] === k ? "active" : ""}">${v}</button>`).join("")
+  + (SESSION.user ? `<div class="who">Signed in as<br><b style="color:#c9d1d9">${esc(SESSION.user.email)}</b><div class="row" style="margin-top:8px">
+     <button class="b" onclick="pwDlg()">Change password</button><button class="b" onclick="logout()">Sign out</button></div></div>` : "");
+  $("#nav").querySelectorAll("button[data-p]").forEach(b => b.onclick = () => location.hash = b.dataset.p); }
+async function render() { if (!$("#nav")) return; nav(); const [p, arg] = (location.hash.slice(1) || "dashboard").split("/");
   try { await loadRef(); await (VIEWS[p] || VIEWS.dashboard)(arg); } catch (e) { $("#main").innerHTML = `<div class="card neg">${esc(e.message)}</div>`; } }
 window.addEventListener("hashchange", render);
 const page = (title, actions, body) => $("#main").innerHTML = `<header class="top"><h2>${title}</h2>${actions || ""}</header>${body}`;
 
+// ---------- sign in ----------
+function showLogin(msg) {
+  document.querySelector(".app").innerHTML = `<div class="login"><div class="card"><h1>Techwon Books</h1><p class="muted" style="margin:0">Sign in to your company's books.</p>
+   ${SESSION.has_users === false ? `<div class="note">No accounts exist yet. Set <b>ADMIN_EMAIL</b> and <b>ADMIN_PASSWORD</b> in the hosting environment, redeploy, then sign in with them.</div>` : ""}
+   ${msg ? `<div class="note">${esc(msg)}</div>` : ""}
+   <form id="loginF"><label>Email<input id="lEmail" name="email" type="email" autocomplete="username" required></label>
+   <label>Password<input id="lPw" name="password" type="password" autocomplete="current-password" required></label>
+   <button class="b p" style="padding:10px">Sign in</button><div id="lErr" class="neg"></div></form></div></div>`;
+  $("#loginF").onsubmit = async e => { e.preventDefault(); const f = formData(e.target);
+    try { const r = await api("/api/login", f); SESSION.user = r.user; location.reload(); } catch (err) { $("#lErr").textContent = err.message; } };
+  $("#lEmail").focus(); }
+window.logout = async () => { await api("/api/logout", {}).catch(() => {}); SESSION.user = null; showLogin("You're signed out."); };
+window.pwDlg = () => openDlg("Change password", `<form class="grid" id="pwF" onsubmit="event.preventDefault()">
+  <label>Current password<input type="password" name="current_password" autocomplete="current-password"></label>
+  <label>New password (12+ characters)<input type="password" name="new_password" autocomplete="new-password"></label></form>
+  <div class="row"><button class="b p right" onclick="act(async()=>{await api('/api/me/password',formData($('#pwF')));dlg.close();showLogin('Password changed. Sign in with your new password.')},'Password changed')">Change password</button></div>`);
+
 // ---------- views ----------
 const VIEWS = {};
+
+VIEWS.users = async () => {
+  const users = await api("/api/users");
+  page("Users", `<button class="b p" onclick="userForm()">+ Add user</button>`, `<div class="card"><div class="wrap"><table>
+  <tr><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th>Added</th><th></th></tr>
+  ${users.map(u => `<tr><td>${esc(u.email)}</td><td>${esc(u.name)}</td><td>${u.is_admin ? "Admin" : "Bookkeeper"}</td><td>${u.is_active ? "active" : pill("disabled")}</td><td>${esc(u.created_at.slice(0, 10))}</td>
+   <td class="n" style="white-space:nowrap">${u.id === SESSION.user.id ? '<span class="muted">you</span>' : `
+    <button class="b" onclick="act(async()=>{await api('/api/users/${u.id}',{is_admin:${!u.is_admin}});render()},'Updated')">${u.is_admin ? "Make bookkeeper" : "Make admin"}</button>
+    <button class="b" onclick="resetPw(${u.id})">Reset password</button>
+    <button class="b ${u.is_active ? "d" : ""}" onclick="act(async()=>{await api('/api/users/${u.id}',{is_active:${!u.is_active}});render()},'Updated')">${u.is_active ? "Disable" : "Enable"}</button>`}</td></tr>`).join("")}
+  </table></div>
+  <div class="note">Admins can manage users and settings (including the lock date). Bookkeepers can do everything else. Disabling a user signs them out everywhere.</div></div>`);
+};
+window.userForm = () => openDlg("Add user", `<form class="grid" id="uF" onsubmit="event.preventDefault()"><label>Email<input name="email" type="email"></label><label>Name<input name="name"></label>
+  <label>Temporary password (12+ characters)<input name="password" type="text" autocomplete="off"></label><label class="chk"><input type="checkbox" name="is_admin"> Admin</label></form>
+  <p class="muted">Send the password to them privately. They should change it after signing in.</p>
+  <div class="row"><button class="b p right" onclick="act(async()=>{await api('/api/users',formData($('#uF')));dlg.close();render()},'User added')">Add user</button></div>`);
+window.resetPw = id => openDlg("Reset password", `<form class="grid" id="rpF" onsubmit="event.preventDefault()"><label>New temporary password (12+ characters)<input name="password" type="text" autocomplete="off"></label></form>
+  <div class="row"><button class="b p right" onclick="act(async()=>{await api('/api/users/${id}',formData($('#rpF')));dlg.close()},'Password reset; their sessions have ended')">Reset</button></div>`);
 
 VIEWS.dashboard = async () => {
   const d = await api("/api/dashboard");
@@ -342,7 +389,7 @@ VIEWS.journal = async () => {
   page("Journal Entries", `<button class="b p" onclick="jeForm()">+ Journal entry</button>`, `<div class="card"><div class="wrap"><table>
   <tr><th>#</th><th>Date</th><th>Memo</th><th>Source</th><th>Account</th><th class="n">Debit</th><th class="n">Credit</th><th></th></tr>
   ${j.map(e => e.lines.map((l, k) => `<tr ${k ? "" : 'style="border-top:2px solid var(--line)"'}>${k ? "<td></td><td></td><td></td><td></td>" :
-   `<td>${e.id}</td><td>${e.date}</td><td>${esc(e.memo)}${e.reversed_by_entry_id ? ` <span class="pill">reversed by #${e.reversed_by_entry_id}</span>` : ""}${e.reverses_entry_id ? ` <span class="pill">reverses #${e.reverses_entry_id}</span>` : ""}</td><td>${esc(e.source_type)}</td>`}
+   `<td>${e.id}</td><td>${e.date}</td><td>${esc(e.memo)}${e.reversed_by_entry_id ? ` <span class="pill">reversed by #${e.reversed_by_entry_id}</span>` : ""}${e.reverses_entry_id ? ` <span class="pill">reverses #${e.reverses_entry_id}</span>` : ""}</td><td>${esc(e.source_type)}${e.created_by ? `<br><span class="muted">${esc(e.created_by)}</span>` : ""}</td>`}
    <td class="${l.credit_cents ? "indent" : ""}">${esc(l.account_code)} ${esc(l.account_name)}</td><td class="n">${l.debit_cents ? fmt(l.debit_cents) : ""}</td><td class="n">${l.credit_cents ? fmt(l.credit_cents) : ""}</td>
    <td>${!k && e.source_type === "manual" && !e.reversed_by_entry_id && !e.reverses_entry_id ? `<button class="b d" onclick="revJE(${e.id})">Reverse</button>` : ""}</td></tr>`).join("")).join("") || '<tr><td colspan=8 class="muted">No entries yet.</td></tr>'}
   </table></div></div>`);
@@ -462,7 +509,12 @@ window.saveSettings = () => act(async () => { const f = formData($("#sF")); f.de
   try { new Intl.NumberFormat(undefined, {style: "currency", currency: f.currency}); } catch { throw new Error("Unknown currency code"); }
   await api("/api/settings", f); render(); }, "Settings saved");
 
-render();
+(async () => {
+  try { SESSION = await (await fetch("/api/session")).json(); } catch { SESSION = {login_required: false}; }
+  if (SESSION.login_required && !SESSION.user) return showLogin();
+  if (location.hash === "#users" && !SESSION.user?.is_admin) location.hash = "dashboard";
+  render();
+})();
 </script>
 </body>
 </html>

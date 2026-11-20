@@ -7,9 +7,22 @@ import ledger as L  # noqa: E402
 from ledger import LedgerError  # noqa: E402
 
 
+# Set TEST_DATABASE_URL=postgresql://... to run the whole suite against Postgres.
+PG_URL = os.environ.get("TEST_DATABASE_URL")
+
+
+def fresh_conn():
+    if not PG_URL:
+        return L.connect(":memory:")
+    c = L.connect(PG_URL)
+    c.execute("DROP SCHEMA public CASCADE")
+    c.execute("CREATE SCHEMA public")
+    return c
+
+
 class Base(unittest.TestCase):
     def setUp(self):
-        self.c = L.connect(":memory:")
+        self.c = fresh_conn()
         L.init_db(self.c)
         self.acme = L.create_client(self.c, "Acme Motors", retainer_cents=500000, payment_terms_days=30)
         self.vendor = L.create_vendor(self.c, "Meta Ads")
