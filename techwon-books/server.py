@@ -25,7 +25,7 @@ import sqlite3
 import sys
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -299,6 +299,11 @@ class Handler(BaseHTTPRequestHandler):
         if not self._request_ok(method):
             return self._send(403, {"error": "Forbidden"})
         url = urlparse(self.path)
+        if url.path == "/api/index":  # Vercel rewrite: original path arrives as ?__path=
+            q = parse_qs(url.query, keep_blank_values=True)
+            orig = (q.pop("__path", ["/"])[-1] or "/")
+            orig = "/" + orig.lstrip("/")
+            url = urlparse(orig + ("?" + urlencode(q, doseq=True) if q else ""))
         if method == "GET" and url.path in ("/", "/index.html"):
             with open(os.path.join(HERE, "index.html"), "rb") as f:
                 return self._send(200, f.read(), "text/html; charset=utf-8")

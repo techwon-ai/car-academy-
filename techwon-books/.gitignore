@@ -3,3 +3,4 @@
 *.db-shm
 backups/
 __pycache__/
+.vercel
