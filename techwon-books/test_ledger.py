@@ -137,6 +137,74 @@ class InvoiceTests(Base):
             L.get_invoice(self.c, inv)
 
 
+class DiscountTests(Base):
+    def test_percent_discount_before_tax_and_posting(self):
+        inv = L.create_invoice(self.c, self.acme, "2026-02-01", [
+            {"description": "Strategy", "unit_price_cents": 100000}], tax_rate_bp=1000,
+            discount_type="percent", discount_value=1500)  # 15% off, then 10% tax
+        t = L.get_invoice(self.c, inv)
+        self.assertEqual((t["subtotal_cents"], t["discount_cents"], t["tax_cents"], t["total_cents"]),
+                         (100000, 15000, 8500, 93500))
+        L.issue_invoice(self.c, inv)
+        pl = L.profit_and_loss(self.c, "2026-02-01", "2026-02-28")
+        rev = {r["code"]: r["amount_cents"] for r in pl["revenue"]}
+        self.assertEqual(rev["4950"], -15000)  # shown as its own line, reducing revenue
+        self.assertEqual(pl["net_revenue_cents"], 85000)
+        self.assertEqual(L.dashboard(self.c, "2026-02-28")["ar_cents"], 93500)
+        cp = L.client_profitability(self.c, "2026-02-01", "2026-02-28")["rows"][0]
+        self.assertEqual(cp["net_revenue_cents"], 85000)
+        self.tb_ok()
+
+    def test_amount_discount_with_mixed_tax_lines(self):
+        inv = L.create_invoice(self.c, self.acme, "2026-02-01", [
+            {"description": "Taxable work", "unit_price_cents": 60000},
+            {"description": "Media (no tax)", "unit_price_cents": 40000, "taxable": False}],
+            tax_rate_bp=1000, discount_type="amount", discount_value=10000)
+        t = L.get_invoice(self.c, inv)
+        # $100 off a $1,000 subtotal: 60% of it falls on the taxable $600 -> tax on $540
+        self.assertEqual((t["discount_cents"], t["tax_cents"], t["total_cents"]), (10000, 5400, 95400))
+        L.issue_invoice(self.c, inv)
+        self.tb_ok()
+
+    def test_discount_validation(self):
+        line = [{"description": "x", "unit_price_cents": 5000}]
+        for dtype, val in (("percent", 10001), ("percent", 0), ("amount", -5), ("bogus", 10)):
+            with self.assertRaises(LedgerError, msg=(dtype, val)):
+                L.create_invoice(self.c, self.acme, "2026-02-01", line, discount_type=dtype, discount_value=val)
+        with self.assertRaisesRegex(LedgerError, "larger than the invoice subtotal"):
+            L.create_invoice(self.c, self.acme, "2026-02-01", line, discount_type="amount", discount_value=6000)
+        with self.assertRaises(LedgerError):  # 100% off leaves nothing to invoice
+            L.create_invoice(self.c, self.acme, "2026-02-01", line, discount_type="percent", discount_value=10000)
+
+    def test_edit_discount_on_draft_and_remove_it(self):
+        inv = L.create_invoice(self.c, self.acme, "2026-02-01", [{"description": "x", "unit_price_cents": 5000}])
+        L.update_draft_invoice(self.c, inv, discount_type="amount", discount_value=500)
+        self.assertEqual(L.get_invoice(self.c, inv)["total_cents"], 4500)
+        L.update_draft_invoice(self.c, inv, discount_type="none")
+        self.assertEqual(L.get_invoice(self.c, inv)["total_cents"], 5000)
+
+    def test_void_discounted_invoice_reverses_discount(self):
+        inv = L.create_invoice(self.c, self.acme, "2026-02-01", [{"description": "x", "unit_price_cents": 5000}],
+                               discount_type="percent", discount_value=1000)
+        L.issue_invoice(self.c, inv)
+        L.void_invoice(self.c, inv, "2026-02-02")
+        bal = {r["code"]: r["balance_cents"] for r in L.trial_balance(self.c, "2026-12-31")["rows"]}
+        self.assertEqual(bal.get("4950", 0), 0)
+        self.tb_ok()
+
+    def test_upgrade_books_created_before_discounts(self):
+        # Mimic a database from the previous release, then start the new version on it.
+        self.c.execute("ALTER TABLE invoices DROP COLUMN discount_type")
+        self.c.execute("ALTER TABLE invoices DROP COLUMN discount_value")
+        self.c.execute("DELETE FROM accounts WHERE code = '4950'")
+        L.init_db(self.c)
+        L.init_db(self.c)  # running twice is harmless
+        inv = L.create_invoice(self.c, self.acme, "2026-02-01", [{"description": "x", "unit_price_cents": 5000}],
+                               discount_type="amount", discount_value=1000)
+        L.issue_invoice(self.c, inv)
+        self.tb_ok()
+
+
 class RetainerTests(Base):
     def test_generate_is_idempotent(self):
         L.create_client(self.c, "No Retainer Co")

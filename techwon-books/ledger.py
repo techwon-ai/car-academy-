@@ -28,6 +28,7 @@ SALES_TAX = "2200"
 RETAINER_REVENUE = "4000"
 PASSTHROUGH_REVENUE = "4300"
 REIMBURSED_REVENUE = "4400"
+DISCOUNTS = "4950"
 
 ACCOUNT_TYPES = ("asset", "liability", "equity", "income", "expense")
 SUBTYPES = {
@@ -65,6 +66,7 @@ DEFAULT_ACCOUNTS = [
     ("4300", "Pass-through Media Billings", "income", "passthrough_revenue", 1),
     ("4400", "Reimbursed Client Expenses", "income", "revenue", 1),
     ("4900", "Other Income", "income", "other_income", 0),
+    ("4950", "Discounts Given", "income", "revenue", 1),
     ("5000", "Pass-through Media Spend", "expense", "passthrough_cost", 0),
     ("5100", "Freelancers & Contractors", "expense", "cogs", 0),
     ("5200", "Production Costs (stock, print, video)", "expense", "cogs", 0),
@@ -196,6 +198,8 @@ CREATE TABLE IF NOT EXISTS invoices (
   due_date TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','issued','void')),
   tax_rate_bp INTEGER NOT NULL DEFAULT 0 CHECK (tax_rate_bp >= 0),
+  discount_type TEXT CHECK (discount_type IN ('percent','amount')),
+  discount_value INTEGER NOT NULL DEFAULT 0 CHECK (discount_value >= 0),
   notes TEXT NOT NULL DEFAULT '',
   retainer_period TEXT,
   entry_id INTEGER REFERENCES journal_entries(id),
@@ -285,8 +289,18 @@ def tx(conn):
 
 def init_db(conn):
     conn.executescript(SCHEMA)
-    if "created_by" not in conn.columns("journal_entries"):  # books created before logins existed
-        conn.execute("ALTER TABLE journal_entries ADD COLUMN created_by TEXT")
+    # Upgrades for books created by older versions. Several servers may start at
+    # once, so a column another one just added is not an error.
+    for table, col, ddl in (
+            ("journal_entries", "created_by", "created_by TEXT"),
+            ("invoices", "discount_type", "discount_type TEXT CHECK (discount_type IN ('percent','amount'))"),
+            ("invoices", "discount_value", "discount_value INTEGER NOT NULL DEFAULT 0 CHECK (discount_value >= 0)")):
+        if col not in conn.columns(table):
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+            except Exception:
+                if col not in conn.columns(table):
+                    raise
     with tx(conn):
         for k, v in DEFAULT_SETTINGS.items():
             conn.execute("INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING", (k, v))
@@ -294,6 +308,10 @@ def init_db(conn):
             conn.executemany(
                 "INSERT INTO accounts(code, name, type, subtype, is_system) VALUES (?,?,?,?,?)",
                 DEFAULT_ACCOUNTS)
+        for code, name, typ, sub, system in DEFAULT_ACCOUNTS:
+            if code == DISCOUNTS:  # added after the first release
+                conn.execute("INSERT INTO accounts(code, name, type, subtype, is_system) VALUES (?,?,?,?,?)"
+                             " ON CONFLICT(code) DO NOTHING", (code, name, typ, sub, system))
 
 
 def get_settings(conn):
@@ -657,7 +675,7 @@ def _insert_invoice_lines(conn, invoice_id, lines):
 
 
 def create_invoice(conn, client_id, issue_date, lines, due_date=None, project_id=None,
-                   tax_rate_bp=None, notes="", retainer_period=None):
+                   tax_rate_bp=None, notes="", retainer_period=None, discount_type=None, discount_value=0):
     """Create a DRAFT invoice. Nothing hits the ledger until issue_invoice()."""
     with tx(conn):
         c = _client(conn, client_id)
@@ -677,29 +695,63 @@ def create_invoice(conn, client_id, issue_date, lines, due_date=None, project_id
         tax_rate_bp = _int(tax_rate_bp, "tax_rate_bp")
         if tax_rate_bp < 0:
             raise LedgerError("tax_rate_bp cannot be negative")
+        discount_type, discount_value = _discount(discount_type, discount_value)
         inv_id = conn.execute(
-            "INSERT INTO invoices(client_id, project_id, issue_date, due_date, tax_rate_bp, notes, retainer_period)"
-            " VALUES (?,?,?,?,?,?,?)",
-            (c["id"], project_id or None, issue_date, due_date, tax_rate_bp, str(notes or ""), retainer_period)).lastrowid
+            "INSERT INTO invoices(client_id, project_id, issue_date, due_date, tax_rate_bp, notes, retainer_period,"
+            " discount_type, discount_value) VALUES (?,?,?,?,?,?,?,?,?)",
+            (c["id"], project_id or None, issue_date, due_date, tax_rate_bp, str(notes or ""), retainer_period,
+             discount_type, discount_value)).lastrowid
         _insert_invoice_lines(conn, inv_id, lines)
-        totals = _invoice_totals(conn, inv_id)
-        if totals["total_cents"] <= 0:
-            raise LedgerError("Invoice total must be greater than zero")
+        _check_invoice_totals(conn, inv_id)
         return inv_id
 
 
 def _invoice_totals(conn, invoice_id):
-    inv = conn.execute("SELECT tax_rate_bp FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
+    inv = conn.execute("SELECT tax_rate_bp, discount_type, discount_value FROM invoices WHERE id = ?",
+                       (invoice_id,)).fetchone()
     sub = conn.execute("SELECT COALESCE(SUM(amount_cents),0) FROM invoice_lines WHERE invoice_id = ?",
                        (invoice_id,)).fetchone()[0]
     taxable = conn.execute("SELECT COALESCE(SUM(amount_cents),0) FROM invoice_lines WHERE invoice_id = ? AND taxable = 1",
                            (invoice_id,)).fetchone()[0]
+    if inv["discount_type"] == "percent":
+        discount = _round(Decimal(sub) * inv["discount_value"] / Decimal(10000))
+    elif inv["discount_type"] == "amount":
+        discount = inv["discount_value"]
+    else:
+        discount = 0
+    # The discount comes off before tax; with mixed lines it reduces the taxable
+    # part in proportion to its share of the subtotal.
+    if discount and sub > 0:
+        taxable -= _round(Decimal(discount) * taxable / Decimal(sub))
     tax = _round(Decimal(taxable) * inv["tax_rate_bp"] / Decimal(10000))
     paid = conn.execute("SELECT COALESCE(SUM(amount_cents),0) FROM payments WHERE invoice_id = ? AND voided = 0",
                         (invoice_id,)).fetchone()[0]
-    total = sub + tax
-    return {"subtotal_cents": sub, "tax_cents": tax, "total_cents": total,
+    total = sub - discount + tax
+    return {"subtotal_cents": sub, "discount_cents": discount, "tax_cents": tax, "total_cents": total,
             "paid_cents": paid, "balance_cents": total - paid}
+
+
+def _discount(discount_type, discount_value):
+    """Normalise a discount: percent is in basis points (1000 = 10%), amount in cents."""
+    if discount_type in (None, "", "none"):
+        return None, 0
+    if discount_type not in ("percent", "amount"):
+        raise LedgerError("discount_type must be 'percent' or 'amount'")
+    v = _int(discount_value, "discount_value")
+    if v <= 0:
+        raise LedgerError("Discount must be greater than zero")
+    if discount_type == "percent" and v > 10000:
+        raise LedgerError("A percentage discount can't be more than 100%")
+    return discount_type, v
+
+
+def _check_invoice_totals(conn, invoice_id):
+    t = _invoice_totals(conn, invoice_id)
+    if t["discount_cents"] > t["subtotal_cents"]:
+        raise LedgerError("The discount is larger than the invoice subtotal")
+    if t["total_cents"] <= 0:
+        raise LedgerError("Invoice total must be greater than zero")
+    return t
 
 
 def _invoice_status(inv, totals, today=None):
@@ -748,7 +800,7 @@ def list_invoices(conn, client_id=None, status=None):
 
 
 def update_draft_invoice(conn, invoice_id, lines=None, **fields):
-    allowed = {"issue_date", "due_date", "tax_rate_bp", "notes", "project_id"}
+    allowed = {"issue_date", "due_date", "tax_rate_bp", "notes", "project_id", "discount_type", "discount_value"}
     bad = set(fields) - allowed
     if bad:
         raise LedgerError(f"Unknown invoice field(s): {', '.join(sorted(bad))}")
@@ -765,6 +817,9 @@ def update_draft_invoice(conn, invoice_id, lines=None, **fields):
                 raise LedgerError("tax_rate_bp cannot be negative")
         if fields.get("project_id"):
             fields["project_id"] = _project(conn, fields["project_id"], inv["client_id"])["id"]
+        if "discount_type" in fields or "discount_value" in fields:
+            fields["discount_type"], fields["discount_value"] = _discount(
+                fields.get("discount_type", inv["discount_type"]), fields.get("discount_value", inv["discount_value"]))
         for k, v in fields.items():
             conn.execute(f"UPDATE invoices SET {k} = ? WHERE id = ?", (v or None if k == "project_id" else v, inv["id"]))
         inv = conn.execute("SELECT * FROM invoices WHERE id = ?", (inv["id"],)).fetchone()
@@ -776,8 +831,7 @@ def update_draft_invoice(conn, invoice_id, lines=None, **fields):
                 raise LedgerError("Rebilled-expense invoices can't have lines edited; delete the draft and rebill again")
             conn.execute("DELETE FROM invoice_lines WHERE invoice_id = ?", (inv["id"],))
             _insert_invoice_lines(conn, inv["id"], lines)
-        if _invoice_totals(conn, inv["id"])["total_cents"] <= 0:
-            raise LedgerError("Invoice total must be greater than zero")
+        _check_invoice_totals(conn, inv["id"])
 
 
 def delete_draft_invoice(conn, invoice_id):
@@ -815,6 +869,12 @@ def issue_invoice(conn, invoice_id):
             lines.append({"account_id": l["revenue_account_id"], "client_id": cid, "project_id": pid,
                           "memo": l["description"],
                           **({"credit_cents": amt} if amt > 0 else {"debit_cents": -amt})})
+        if totals["discount_cents"]:
+            disc = account_by_code(conn, DISCOUNTS)
+            if disc["type"] != "income":
+                raise LedgerError(f"Account {DISCOUNTS} must be an income account to record discounts")
+            lines.append({"account_id": disc["id"], "debit_cents": totals["discount_cents"], "client_id": cid,
+                          "project_id": pid, "memo": f"Discount on {number}"})
         if totals["tax_cents"]:
             lines.append({"account_code": SALES_TAX, "credit_cents": totals["tax_cents"],
                           "client_id": cid, "memo": f"Tax on {number}"})

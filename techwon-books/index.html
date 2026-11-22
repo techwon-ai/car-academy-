@@ -88,7 +88,7 @@ async function api(path, body) {
   const j = await r.json().catch(() => ({error: "Bad response"}));
   if (r.status === 401 && path !== "/api/login") { showLogin("Your session ended. Please sign in again."); throw new Error("Please sign in"); }
   if (!r.ok) throw new Error(j.error || r.statusText); return j; }
-async function act(fn, okMsg) { try { const r = await fn(); if (okMsg) toast(okMsg); return r; } catch (e) { toast(e.message, true); throw e; } }
+async function act(fn, okMsg) { try { const r = await fn(); if (okMsg) toast(okMsg); return r; } catch (e) { toast(e.message, true); } } // errors are shown, not rethrown
 const pill = s => `<span class="pill ${esc(s)}">${esc(s)}</span>`;
 function formData(form) { const o = {}; new FormData(form).forEach((v, k) => o[k] = v);
   form.querySelectorAll("input[type=checkbox]").forEach(c => o[c.name] = c.checked); return o; }
@@ -207,11 +207,11 @@ window.filterInv = () => { const s = $("#fStatus").value, t = $("#fText").value.
 
 const revOpts = sel => acctOpts(a => a.type === "income", sel);
 const lineRow = (l = {}) => `<tr><td><input name="description" value="${esc(l.description || "")}" placeholder="Description"></td>
- <td style="width:80px"><input name="quantity" value="${esc(l.quantity || "1")}"></td>
- <td style="width:120px"><input name="unit_price" value="${l.unit_price_cents !== undefined ? dollars(l.unit_price_cents) : ""}" placeholder="0.00"></td>
+ <td style="width:80px"><input name="quantity" oninput="invCalc()" value="${esc(l.quantity || "1")}"></td>
+ <td style="width:120px"><input name="unit_price" oninput="invCalc()" value="${l.unit_price_cents !== undefined ? dollars(l.unit_price_cents) : ""}" placeholder="0.00"></td>
  <td style="width:210px"><select name="revenue_account_code">${revOpts(l.revenue_account_code || "4100")}</select></td>
- <td style="width:50px;text-align:center"><input type="checkbox" name="taxable" ${l.taxable === 0 ? "" : "checked"}></td>
- <td style="width:30px"><button type="button" class="b d" onclick="this.closest('tr').remove()">×</button></td></tr>`;
+ <td style="width:50px;text-align:center"><input type="checkbox" name="taxable" onchange="invCalc()" ${l.taxable === 0 ? "" : "checked"}></td>
+ <td style="width:30px"><button type="button" class="b d" onclick="this.closest('tr').remove();invCalc()">×</button></td></tr>`;
 window.invoiceForm = async (id) => {
   const inv = id ? await api(`/api/invoices/${id}`) : null; const s = REF.settings;
   openDlg(inv ? "Edit draft invoice" : "New invoice", `<form id="invF" class="grid">
@@ -219,13 +219,33 @@ window.invoiceForm = async (id) => {
    <label>Project<select name="project_id">${projectOpts(inv?.client_id, inv?.project_id)}</select></label>
    <label>Invoice date<input type="date" name="issue_date" value="${inv?.issue_date || today()}" required></label>
    <label>Due date <span class="muted">(blank = client terms)</span><input type="date" name="due_date" value="${inv?.due_date || ""}"></label>
-   <label>Tax rate %<input name="tax_pct" value="${((inv ? inv.tax_rate_bp : +s.default_tax_rate_bp) / 100).toString()}"></label>
+   <label>Tax rate %<input name="tax_pct" oninput="invCalc()" value="${((inv ? inv.tax_rate_bp : +s.default_tax_rate_bp) / 100).toString()}"></label>
+   <label>Discount<select name="discount_type" onchange="invCalc()">${opt("", "No discount", inv?.discount_type || "")}${opt("percent", "Percent off (%)", inv?.discount_type)}${opt("amount", "Fixed amount off", inv?.discount_type)}</select></label>
+   <label>Discount value<input name="discount_value" oninput="invCalc()" placeholder="e.g. 10 or 250.00" value="${inv?.discount_type === "percent" ? inv.discount_value / 100 : inv?.discount_type === "amount" ? dollars(inv.discount_value) : ""}"></label>
    <label style="grid-column:1/-1">Notes / payment instructions<textarea name="notes" rows="2">${esc(inv?.notes || "")}</textarea></label></form>
    <div class="wrap"><table class="lines" id="invL"><tr><th>Description</th><th>Qty / hrs</th><th>Rate</th><th>Income account</th><th>Tax</th><th></th></tr>
    ${(inv?.lines || [{}]).map(lineRow).join("")}</table></div>
-   <div class="row" style="margin-top:10px"><button class="b" onclick="$('#invL').insertAdjacentHTML('beforeend', lineRow())">+ Line</button>
+   <div id="invSum" class="row muted" style="justify-content:flex-end;gap:18px;margin-top:8px;font-variant-numeric:tabular-nums"></div>
+   <div class="row" style="margin-top:10px"><button class="b" onclick="$('#invL').insertAdjacentHTML('beforeend', lineRow());invCalc()">+ Line</button>
    <button class="b right" onclick="saveInvoice(${id || 0}, false)">Save draft</button><button class="b p" onclick="saveInvoice(${id || 0}, true)">Save &amp; issue</button></div>`);
+  invCalc();
 };
+function readDiscount(f) { // -> {discount_type, discount_value} in API units (basis points or cents)
+  if (!f.discount_type) return {discount_type: "none", discount_value: 0};
+  if (!String(f.discount_value).trim()) throw new Error("Enter a discount value, or choose No discount");
+  return {discount_type: f.discount_type, discount_value: f.discount_type === "percent" ? pctToBp(f.discount_value) : toCents(f.discount_value)}; }
+// Live preview; the server recalculates and is the source of truth.
+window.invCalc = () => { const out = $("#invSum"); if (!out) return;
+  try { const f = formData($("#invF")); let sub = 0, taxable = 0;
+    document.querySelectorAll("#invL tr").forEach((tr, i) => { if (!i) return;
+      const q = parseFloat(tr.querySelector("[name=quantity]").value || "1"), amt = Math.round((isNaN(q) ? 0 : q) * toCents(tr.querySelector("[name=unit_price]").value));
+      sub += amt; if (tr.querySelector("[name=taxable]").checked) taxable += amt; });
+    const d = f.discount_type && String(f.discount_value).trim() ? readDiscount(f) : {discount_type: "none", discount_value: 0};
+    const disc = d.discount_type === "percent" ? Math.round(sub * d.discount_value / 10000) : d.discount_type === "amount" ? d.discount_value : 0;
+    if (disc && sub > 0) taxable -= Math.round(disc * taxable / sub);
+    const tax = Math.round(taxable * pctToBp(f.tax_pct) / 10000);
+    out.innerHTML = `<span>Subtotal <b>${fmt(sub)}</b></span>${disc ? `<span>Discount <b class="neg">−${fmt(disc)}</b></span>` : ""}<span>Tax <b>${fmt(tax)}</b></span><span>Total <b style="color:var(--ink)">${fmt(sub - disc + tax)}</b></span>`;
+  } catch (e) { out.textContent = e.message; } };
 function pctToBp(v) { const c = toCents(v || "0"); if (c < 0) throw new Error("Tax rate cannot be negative"); return c; } // "7.5" -> 750
 window.saveInvoice = async (id, issue) => act(async () => {
   const f = formData($("#invF"));
@@ -233,7 +253,7 @@ window.saveInvoice = async (id, issue) => act(async () => {
     description: tr.querySelector("[name=description]").value, quantity: tr.querySelector("[name=quantity]").value || "1",
     unit_price_cents: toCents(tr.querySelector("[name=unit_price]").value), revenue_account_code: tr.querySelector("[name=revenue_account_code]").value,
     taxable: tr.querySelector("[name=taxable]").checked})).filter(l => l.description || l.unit_price_cents);
-  const body = {issue_date: f.issue_date, due_date: f.due_date || null, project_id: f.project_id || null, tax_rate_bp: pctToBp(f.tax_pct), notes: f.notes, lines};
+  const body = {issue_date: f.issue_date, due_date: f.due_date || null, project_id: f.project_id || null, tax_rate_bp: pctToBp(f.tax_pct), notes: f.notes, lines, ...readDiscount(f)};
   if (id) { if (!f.due_date) delete body.due_date; await api(`/api/invoices/${id}`, body); }
   else { if (!f.client_id) throw new Error("Choose a client"); id = (await api("/api/invoices", {...body, client_id: f.client_id})).id; }
   if (issue) { const r = await api(`/api/invoices/${id}/issue`, {}); toast(`Issued ${r.number}`); } else toast("Draft saved");
@@ -251,6 +271,7 @@ window.showInvoice = async (id) => {
    <table><tr><th>Description</th><th class="n">Qty</th><th class="n">Rate</th><th>Account</th><th class="n">Amount</th></tr>
    ${i.lines.map(l => `<tr><td>${esc(l.description)}${l.taxable ? "" : ' <span class="muted">(no tax)</span>'}</td><td class="n">${esc(l.quantity)}</td><td class="n">${fmt(l.unit_price_cents)}</td><td>${esc(l.revenue_account_code)}</td><td class="n">${fmt(l.amount_cents)}</td></tr>`).join("")}
    <tr><td colspan=4 class="n">Subtotal</td><td class="n">${fmt(i.subtotal_cents)}</td></tr>
+   ${i.discount_cents ? `<tr><td colspan=4 class="n">Discount${i.discount_type === "percent" ? ` (${i.discount_value / 100}%)` : ""}</td><td class="n neg">−${fmt(i.discount_cents)}</td></tr>` : ""}
    <tr><td colspan=4 class="n">Tax (${i.tax_rate_bp / 100}%)</td><td class="n">${fmt(i.tax_cents)}</td></tr>
    <tr class="total"><td colspan=4 class="n">Total</td><td class="n">${fmt(i.total_cents)}</td></tr>
    <tr><td colspan=4 class="n">Paid</td><td class="n">${fmt(i.paid_cents)}</td></tr>
@@ -274,7 +295,7 @@ window.printInvoice = async id => { const i = await api(`/api/invoices/${id}`); 
   <div style="display:flex;justify-content:space-between"><div><h1>${esc(s.company_name)}</h1></div><div style="text-align:right"><h2 style="margin:0">INVOICE ${esc(i.number)}</h2>Date: ${i.issue_date}<br>Due: ${i.due_date}</div></div>
   <p><b>Bill to</b><br>${esc(i.client_name)}<br>${esc(i.client_address).replace(/\n/g, "<br>")}<br>${esc(i.client_email)}</p>${i.project_name ? `<p>Project: ${esc(i.project_name)}</p>` : ""}
   <table><tr><th>Description</th><th class="n">Qty</th><th class="n">Rate</th><th class="n">Amount</th></tr>${i.lines.map(l => `<tr><td>${esc(l.description)}</td><td class="n">${esc(l.quantity)}</td><td class="n">${fmt(l.unit_price_cents)}</td><td class="n">${fmt(l.amount_cents)}</td></tr>`).join("")}
-  <tr><td colspan=3 class="n">Subtotal</td><td class="n">${fmt(i.subtotal_cents)}</td></tr>${i.tax_cents ? `<tr><td colspan=3 class="n">Tax ${i.tax_rate_bp / 100}%</td><td class="n">${fmt(i.tax_cents)}</td></tr>` : ""}
+  <tr><td colspan=3 class="n">Subtotal</td><td class="n">${fmt(i.subtotal_cents)}</td></tr>${i.discount_cents ? `<tr><td colspan=3 class="n">Discount${i.discount_type === "percent" ? ` (${i.discount_value / 100}%)` : ""}</td><td class="n">−${fmt(i.discount_cents)}</td></tr>` : ""}${i.tax_cents ? `<tr><td colspan=3 class="n">Tax ${i.tax_rate_bp / 100}%</td><td class="n">${fmt(i.tax_cents)}</td></tr>` : ""}
   <tr class="t"><td colspan=3 class="n">Total</td><td class="n">${fmt(i.total_cents)}</td></tr>${i.paid_cents ? `<tr><td colspan=3 class="n">Paid</td><td class="n">${fmt(i.paid_cents)}</td></tr><tr class="t"><td colspan=3 class="n">Balance due</td><td class="n">${fmt(i.balance_cents)}</td></tr>` : ""}</table>
   ${i.notes ? `<p style="margin-top:24px;white-space:pre-wrap">${esc(i.notes)}</p>` : ""}${i.status === "void" ? '<h2 style="color:#c00">VOID</h2>' : ""}`);
   w.document.close(); w.focus(); w.print(); };

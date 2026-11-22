@@ -140,7 +140,8 @@ class PostgresDB:
         wants_id = m and m.group(1).lower() not in NO_ID_TABLES and "RETURNING" not in sql.upper()
         cur = self.raw.execute(_pg_sql(sql) + (" RETURNING id" if wants_id else ""), tuple(args))
         if wants_id:
-            return _PGResult(cur, cur.fetchone()[0])
+            row = cur.fetchone()  # None when ON CONFLICT DO NOTHING skipped the insert
+            return _PGResult(cur, row[0] if row else None)
         return _PGResult(cur)
 
     def executemany(self, sql, seq):

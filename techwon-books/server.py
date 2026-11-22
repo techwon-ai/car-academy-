@@ -90,7 +90,8 @@ def _(c, q, b): return L.list_invoices(c, q.get("client_id"), q.get("status"))
 @route("POST", "/api/invoices")
 def _(c, q, b):
     return {"id": L.create_invoice(c, b.get("client_id"), b.get("issue_date"), b.get("lines"),
-                                   **_ids(b, "due_date", "project_id", "tax_rate_bp", "notes"))}
+                                   **_ids(b, "due_date", "project_id", "tax_rate_bp", "notes",
+                                          "discount_type", "discount_value"))}
 @route("GET", r"/api/invoices/(\d+)")
 def _(c, q, b, iid): return L.get_invoice(c, iid)
 @route("POST", r"/api/invoices/(\d+)")
