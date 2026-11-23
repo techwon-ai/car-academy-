@@ -2,7 +2,7 @@
   "rewrites": [{ "source": "/:path*", "destination": "/api/index?__path=/:path*" }],
   "functions": {
     "api/index.py": {
-      "includeFiles": "{index.html,ledger.py,server.py,auth.py,db.py}",
+      "includeFiles": "{index.html,ledger.py,server.py,auth.py,db.py,brand/logo.png}",
       "maxDuration": 30
     }
   }

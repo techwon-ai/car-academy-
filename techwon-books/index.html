@@ -602,8 +602,8 @@ VIEWS.settings = async () => { const s = REF.settings; await loadLogo();
   <div class="row" style="align-items:center;gap:16px;margin-bottom:14px">
    <div style="background:#fff;border:1px solid var(--line);border-radius:8px;padding:12px 16px;min-width:220px;min-height:70px;display:flex;align-items:center">
     ${LOGO ? `<img src="${esc(LOGO)}" alt="Logo" style="max-height:54px;max-width:240px">` : `<span class="muted">No logo yet: invoices show your company name.</span>`}</div>
-   <label class="b" style="flex-direction:row;cursor:pointer">Upload logo<input type="file" id="logoFile" accept="image/png,image/jpeg,image/webp,image/svg+xml" hidden onchange="uploadLogo(this.files[0])"></label>
-   ${LOGO ? `<button class="b d" onclick="act(async()=>{await api('/api/logo',{logo:''});LOGO=null;render()},'Logo removed')">Remove</button>` : ""}
+   <label class="b" style="flex-direction:row;cursor:pointer">${LOGO ? "Replace logo" : "Upload logo"}<input type="file" id="logoFile" accept="image/png,image/jpeg,image/webp,image/svg+xml" hidden onchange="uploadLogo(this.files[0])"></label>
+   ${LOGO_CUSTOM ? `<button class="b d" onclick="act(async()=>{await api('/api/logo',{logo:''});LOGO=null;render()},'Back to the standard Techwon logo')">Use standard logo</button>` : ""}
    <span class="muted" style="font-size:12px">PNG with a transparent background works best. Empty margins are trimmed automatically.</span></div>
   <form class="grid" id="bF" onsubmit="event.preventDefault()">
   <label style="grid-column:span 2">Company address<textarea name="company_address" rows="3">${esc(s.company_address)}</textarea></label>
@@ -630,8 +630,8 @@ window.saveSettings = () => act(async () => { const f = formData($("#sF")); f.de
   await api("/api/settings", f); render(); }, "Settings saved");
 
 // ----- logo -----
-let LOGO = null;
-async function loadLogo(force) { if (LOGO === null || force) { try { LOGO = (await api("/api/logo")).logo || ""; } catch { LOGO = ""; } } return LOGO; }
+let LOGO = null, LOGO_CUSTOM = false;
+async function loadLogo(force) { if (LOGO === null || force) { try { const r = await api("/api/logo"); LOGO = r.logo || ""; LOGO_CUSTOM = !!r.custom; } catch { LOGO = ""; } } return LOGO; }
 // Crop away empty (transparent or white) margins so a square logo file doesn't render tiny.
 function trimLogo(dataUrl) { return new Promise(resolve => { const img = new Image();
   img.onload = () => { try {
@@ -651,7 +651,7 @@ window.uploadLogo = file => file && act(async () => {
   if (file.size > 2_000_000) throw new Error("That image is over 2 MB. Use a smaller PNG or SVG.");
   let data = await new Promise((ok, bad) => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.onerror = bad; fr.readAsDataURL(file); });
   if (!data.startsWith("data:image/svg")) data = await trimLogo(data);
-  await api("/api/logo", {logo: data}); LOGO = data; render(); }, "Logo uploaded");
+  await api("/api/logo", {logo: data}); LOGO = null; render(); }, "Logo uploaded");
 
 (async () => { const f = formData($("#sF")); f.default_tax_rate_bp = pctToBp(f.tax_pct); delete f.tax_pct; f.currency = f.currency.toUpperCase();
   try { new Intl.NumberFormat(undefined, {style: "currency", currency: f.currency}); } catch { throw new Error("Unknown currency code"); }

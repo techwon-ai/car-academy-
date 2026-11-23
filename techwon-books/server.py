@@ -102,8 +102,21 @@ def _(c, q, b, iid):
 def _(c, q, b, iid):
     lines = b.pop("lines", None)
     return L.revise_invoice(c, iid, lines=lines, **b)
+def _default_logo():
+    """The Techwon logo bundled with the app, used until an admin uploads another."""
+    import base64
+    try:
+        with open(os.path.join(HERE, "brand", "logo.png"), "rb") as f:
+            return "data:image/png;base64," + base64.b64encode(f.read()).decode()
+    except OSError:
+        return ""
+
+
+DEFAULT_LOGO = _default_logo()
+
+
 @route("GET", "/api/logo")
-def _(c, q, b): return {"logo": L.get_logo(c)}
+def _(c, q, b): return {"logo": L.get_logo(c) or DEFAULT_LOGO, "custom": bool(L.get_logo(c))}
 @route("POST", "/api/logo")
 def _(c, q, b):
     _admin(c)
