@@ -55,6 +55,8 @@ nav h1{width:100%;margin:4px 6px 8px}nav button{width:auto}main{padding:16px}}
 .login form{display:flex;flex-direction:column;gap:12px;margin-top:16px}
 .who{margin-top:18px;padding:10px;border-top:1px solid #ffffff22;font-size:12px;color:#8b949e;word-break:break-all}
 .who button{padding:6px 10px;font-size:12px}
+[hidden]{display:none!important}
+#billT td:first-child,#invT td:nth-child(4),#invT td:nth-child(5){white-space:nowrap}
 @media print{nav,header.top .b,.noprint{display:none!important}main{padding:0}.card{border:0}}
 </style>
 </head>
@@ -115,8 +117,8 @@ const projectOpts = (clientId, sel) => opt("", "— none —") + REF.projects.fi
   .map(p => opt(p.id, clientId ? p.name : `${p.client_name} · ${p.name}`, sel)).join("");
 
 // ---------- routing ----------
-const PAGES = {dashboard: "Dashboard", invoices: "Invoices", bills: "Bills & Expenses", clients: "Clients & Projects",
-  vendors: "Vendors", banking: "Bank Reconciliation", journal: "Journal Entries", accounts: "Chart of Accounts",
+const PAGES = {dashboard: "Dashboard", invoices: "Invoices", expenses: "Expenses", clients: "Clients & Projects",
+  banking: "Bank Reconciliation", journal: "Journal Entries", accounts: "Chart of Accounts",
   reports: "Reports", settings: "Settings", users: "Users"};
 let SESSION = {login_required: false, user: null};
 function nav() { const pages = Object.entries(PAGES).filter(([k]) => k !== "users" || SESSION.user?.is_admin);
@@ -409,54 +411,89 @@ window.genRet = () => act(async () => { const f = formData($("#retF")); const r 
   toast(`Created ${r.created.length}, skipped ${r.skipped.length}`); dlg.close(); render(); });
 window.rebillDlg = async cid => { const items = await api(`/api/unbilled-expenses?client_id=${cid}`);
   openDlg("Rebill expenses to client", `<p class="muted">Pass-through media is billed to <b>4300 Pass-through Media Billings</b>; other costs to <b>4400 Reimbursed Client Expenses</b>. A draft invoice is created for review.</p>
-  <table id="rbT"><tr><th></th><th>Date</th><th>Vendor</th><th>Description</th><th class="n">Cost</th></tr>${items.map(b => `<tr><td><input type="checkbox" value="${b.id}" checked></td><td>${b.bill_date}</td><td>${esc(b.vendor_name)}</td><td>${esc(b.description)}</td><td class="n">${fmt(b.amount_cents)}</td></tr>`).join("")}</table>
+  <table id="rbT"><tr><th></th><th>Date</th><th>Paid to</th><th>Description</th><th class="n">Cost</th></tr>${items.map(b => `<tr><td><input type="checkbox" value="${b.id}" checked></td><td>${b.bill_date}</td><td>${esc(payeeOf(b))}</td><td>${esc(b.description)}</td><td class="n">${fmt(b.amount_cents)}</td></tr>`).join("")}</table>
   <form class="grid" id="rbF" style="margin-top:10px"><label>Invoice date<input type="date" name="issue_date" value="${today()}"></label><label>Markup %<input name="markup" value="0"></label>
   <button class="b p" type="button" onclick="doRebill(${cid})">Create draft invoice</button></form>`); };
 window.doRebill = cid => act(async () => { const f = formData($("#rbF")); const ids = [...document.querySelectorAll("#rbT input:checked")].map(c => +c.value);
   const r = await api("/api/rebill", {client_id: cid, issue_date: f.issue_date, markup_bp: pctToBp(f.markup), bill_ids: ids}); await render(); showInvoice(r.id); }, "Draft rebill invoice created");
 
-// ----- bills -----
-VIEWS.bills = async () => {
-  const bills = await api("/api/bills");
-  page("Bills & Expenses", `<button class="b" onclick="billForm(true)">+ Expense (paid now)</button><button class="b p" onclick="billForm(false)">+ Bill (pay later)</button>`, `
-  <div class="card"><div class="row noprint" style="margin-bottom:8px"><button class="b right" onclick="tableCSV($('#billT'),'bills')">Export CSV</button></div><div class="wrap"><table id="billT">
-  <tr><th>Date</th><th>Vendor</th><th>Description</th><th>Account</th><th>Client / project</th><th>Status</th><th class="n">Amount</th><th class="n">Balance</th><th></th></tr>
-  ${bills.map(b => `<tr><td>${b.bill_date}</td><td>${esc(b.vendor_name)}</td><td>${esc(b.description)}${b.billable ? ` <span class="pill">${b.rebilled_invoice_number ? "rebilled " + esc(b.rebilled_invoice_number) : b.rebilled_invoice_id ? "on draft invoice" : "billable"}</span>` : ""}</td>
-   <td>${esc(b.expense_account_code)} ${esc(b.expense_account_name)}</td><td>${esc(b.client_name || "")}${b.project_name ? " · " + esc(b.project_name) : ""}</td><td>${pill(b.display_status)}</td>
-   <td class="n">${fmt(b.amount_cents)}</td><td class="n">${b.balance_cents ? fmt(b.balance_cents) : ""}</td>
-   <td class="n" style="white-space:nowrap">${b.balance_cents ? `<button class="b" onclick="payBillDlg(${b.id},${b.balance_cents})">Pay</button>` : ""}
-   ${b.status === "open" && !b.paid_cents && !b.rebilled_invoice_id ? `<button class="b d" onclick="voidBill(${b.id})">Void</button>` : ""}
-   ${b.payments.filter(p => !p.voided).map(p => `<button class="b d" title="Void payment of ${fmt(p.amount_cents)} on ${p.date}" onclick="voidBillPay(${p.id})">Void pmt</button>`).join("")}</td></tr>`).join("") || '<tr><td colspan=9 class="muted">No bills yet.</td></tr>'}
-  </table></div></div>`);
+// ----- expenses -----
+const GENERAL_PAYEE = "General expenses";
+const KIND_LABEL = {overhead: "Overhead (running the agency)", client: "Client costs (spent on client work)", media: "Ad spend you rebill", other: "Other"};
+let CATS = [];
+async function loadCats() { CATS = await api("/api/expense-categories"); return CATS; }
+const catOpts = sel => opt("", "— choose a category —", sel || "") + ["overhead", "client", "media", "other"].map(k => {
+  const c = CATS.filter(a => a.kind === k && a.is_active); return c.length ? `<optgroup label="${esc(KIND_LABEL[k])}">${c.map(a => opt(a.code, a.name, sel)).join("")}</optgroup>` : ""; }).join("");
+const payeeOf = b => b.vendor_name === GENERAL_PAYEE ? "" : b.vendor_name;
+
+VIEWS.expenses = VIEWS.bills = async () => {
+  const [bills] = await Promise.all([api("/api/bills"), loadCats()]);
+  const month = today().slice(0, 7), live = bills.filter(b => b.status === "open");
+  const thisMonth = live.filter(b => b.bill_date.startsWith(month)), total = thisMonth.reduce((t, b) => t + b.amount_cents, 0);
+  const unpaid = live.filter(b => b.balance_cents > 0), owed = unpaid.reduce((t, b) => t + b.balance_cents, 0);
+  const byCat = {}; thisMonth.forEach(b => byCat[b.expense_account_name] = (byCat[b.expense_account_name] || 0) + b.amount_cents);
+  const status = b => b.status === "void" ? pill("deleted") : b.balance_cents === 0 ? pill("paid") : b.display_status === "overdue" ? pill("overdue") : `<span class="pill draft">not paid</span>`;
+  page("Expenses", `<button class="b" onclick="catsDlg()">Categories</button><button class="b p" onclick="expenseForm()">+ Add expense</button>`, `
+  <div class="kpis"><div class="kpi"><div class="l">Spent this month</div><div class="v">${fmt(total)}</div><div class="s">${thisMonth.length} expense${thisMonth.length === 1 ? "" : "s"}</div></div>
+   <div class="kpi"><div class="l">Not paid yet</div><div class="v">${fmt(owed)}</div><div class="s">${unpaid.length ? `${unpaid.length} to pay` : "all paid"}</div></div></div>
+  ${total ? `<div class="card"><b>This month by category</b><table style="margin-top:6px">${Object.entries(byCat).sort((x, y) => y[1] - x[1]).map(([n, v]) =>
+    `<tr><td>${esc(n)}</td><td class="n" style="width:140px">${fmt(v)}</td><td style="width:38%"><div style="height:8px;border-radius:4px;background:var(--accent);width:${Math.max(2, 100 * v / total)}%"></div></td></tr>`).join("")}</table></div>` : ""}
+  <div class="card"><div class="row noprint" style="margin-bottom:8px"><select id="eCat" onchange="filterExp()"><option value="">All categories</option>${[...new Set(bills.map(b => b.expense_account_name))].sort().map(n => opt(n, n)).join("")}</select>
+   <input id="eText" placeholder="Search" oninput="filterExp()"><label class="chk"><input type="checkbox" id="eVoid" onchange="filterExp()"> Show deleted</label>
+   <button class="b right" onclick="tableCSV($('#billT'),'expenses')">Export CSV</button></div>
+  <div class="wrap"><table id="billT"><tr><th>Date</th><th>Category</th><th>Paid to</th><th>Description</th><th>Client</th><th>Status</th><th class="n">Amount</th><th></th></tr>
+  ${bills.map(b => `<tr data-c="${esc(b.expense_account_name)}" data-v="${b.status === "void" ? 1 : 0}" data-t="${esc([payeeOf(b), b.description, b.client_name || "", b.expense_account_name].join(" ").toLowerCase())}">
+   <td>${b.bill_date}</td><td>${esc(b.expense_account_name)}</td><td>${esc(payeeOf(b))}</td>
+   <td>${esc(b.description)}${b.billable ? ` <span class="pill">${b.rebilled_invoice_number ? "charged on " + esc(b.rebilled_invoice_number) : b.rebilled_invoice_id ? "on draft invoice" : "to charge client"}</span>` : ""}</td>
+   <td>${esc(b.client_name || "")}${b.project_name ? " · " + esc(b.project_name) : ""}</td><td>${status(b)}</td>
+   <td class="n">${fmt(b.amount_cents)}${b.balance_cents && b.balance_cents !== b.amount_cents ? `<br><span class="muted">${fmt(b.balance_cents)} left</span>` : ""}</td>
+   <td class="n" style="white-space:nowrap">${b.status === "open" && b.balance_cents ? `<button class="b" onclick="payBillDlg(${b.id},${b.balance_cents})">Mark paid</button>` : ""}
+    ${b.status === "open" ? `<button class="b d" onclick="deleteExpense(${b.id})">Delete</button>` : ""}</td></tr>`).join("")}
+  <tr id="expEmpty" hidden><td colspan=8 class="muted">No expenses here yet. Click “+ Add expense” to record one.</td></tr></table></div></div>`);
+  filterExp();
 };
-window.billForm = paidNow => openDlg(paidNow ? "Record expense (paid now)" : "Enter bill", `<form class="grid" id="billF">
-  <label>Vendor<select name="vendor_id">${opt("", "— choose —")}${REF.vendors.map(v => opt(v.id, v.name)).join("")}</select></label>
-  <label>New vendor instead<input name="new_vendor" placeholder="Type a name to add"></label>
-  <label>Date<input type="date" name="bill_date" value="${today()}"></label>${paidNow ? "" : `<label>Due date<input type="date" name="due_date"></label>`}
-  <label>Amount<input name="amount" placeholder="0.00" required></label>
-  <label>Category (account)<select name="expense_account_code">${acctOpts(a => a.type === "expense" || ["current_asset", "fixed_asset"].includes(a.subtype), "6900")}</select></label>
-  <label style="grid-column:span 2">Description<input name="description"></label>
-  <label>Client<select name="client_id" onchange="this.form.project_id.innerHTML=projectOpts(this.value)">${clientOpts()}</select></label>
+window.filterExp = () => { const c = $("#eCat").value, t = $("#eText").value.toLowerCase(), v = $("#eVoid").checked; let n = 0;
+  document.querySelectorAll("#billT tr[data-c]").forEach(r => { const ok = (!c || r.dataset.c === c) && r.dataset.t.includes(t) && (v || r.dataset.v === "0");
+    r.style.display = ok ? "" : "none"; n += ok; });
+  $("#expEmpty").hidden = n > 0; };
+window.expenseForm = async () => { await loadCats(); const payees = await api("/api/payees");
+  openDlg("Add expense", `<form class="grid" id="exF" onsubmit="event.preventDefault()">
+  <label>Date<input type="date" name="date" value="${today()}"></label>
+  <label>Amount<input name="amount" placeholder="0.00" inputmode="decimal"></label>
+  <label>Category<select name="category_code">${catOpts()}</select></label>
+  <label>Paid from<select name="paid_from" onchange="$('#exDue').hidden=!!this.value">${acctOpts(a => ["cash", "credit_card"].includes(a.subtype), "1000")}<option value="">Not paid yet (we owe it)</option></select></label>
+  <label id="exDue" hidden>Pay by<input type="date" name="due_date"></label>
+  <label>Paid to <span class="muted">(optional)</span><input name="payee" list="payeeList" autocomplete="off" placeholder="e.g. staff, landlord, Meta"><datalist id="payeeList">${payees.map(x => `<option value="${esc(x)}">`).join("")}</datalist></label>
+  <label style="grid-column:1/-1">Description<input name="description" placeholder="e.g. November salaries, client visit to Lahore"></label>
+  <label>Client <span class="muted">(optional)</span><select name="client_id" onchange="this.form.project_id.innerHTML=projectOpts(this.value)">${clientOpts()}</select></label>
   <label>Project<select name="project_id">${projectOpts()}</select></label>
-  <label class="chk"><input type="checkbox" name="billable"> Billable to client</label>
-  ${paidNow ? `<label>Paid from<select name="paid_from">${acctOpts(a => ["cash", "credit_card"].includes(a.subtype))}</select></label>` : ""}
-  <label>Reference / receipt #<input name="reference"></label></form>
-  <p class="muted">Tip: ad spend you rebill to clients goes to <b>5000 Pass-through Media Spend</b> so it's excluded from net revenue.</p>
-  <div class="row"><button class="b p right" onclick="saveBill()">Save</button></div>`);
-window.saveBill = () => act(async () => { const f = formData($("#billF"));
-  if (f.new_vendor.trim()) f.vendor_id = (await api("/api/vendors", {name: f.new_vendor.trim()})).id;
-  if (!f.vendor_id) throw new Error("Choose or add a vendor");
-  await api("/api/bills", {vendor_id: f.vendor_id, bill_date: f.bill_date, due_date: f.due_date || null, amount_cents: toCents(f.amount),
-    expense_account_code: f.expense_account_code, description: f.description, client_id: f.client_id || null, project_id: f.project_id || null,
-    billable: f.billable, reference: f.reference, paid_from: f.paid_from || null});
-  dlg.close(); render(); }, "Saved");
-window.payBillDlg = (id, bal) => openDlg("Pay bill", `<form class="grid" id="pbF"><label>Date<input type="date" name="date" value="${today()}"></label>
-  <label>Amount<input name="amount" value="${dollars(bal)}"></label><label>Pay from<select name="acct">${acctOpts(a => ["cash", "credit_card"].includes(a.subtype))}</select></label>
-  <label>Reference<input name="ref"></label><button type="button" class="b p" onclick="payBill(${id})">Pay</button></form>`);
+  <label class="chk"><input type="checkbox" name="billable"> Charge this back to the client</label></form>
+  <div class="row" style="margin-top:12px"><button class="b" onclick="catsDlg()">Add or edit categories</button><button class="b p right" onclick="saveExpense()">Save expense</button></div>`); };
+window.saveExpense = () => act(async () => { const f = formData($("#exF")); const amount = toCents(f.amount);
+  if (amount <= 0) throw new Error("Enter the amount spent");
+  if (!f.category_code) throw new Error("Choose a category");
+  await api("/api/expenses", {date: f.date, amount_cents: amount, category_code: f.category_code, paid_from: f.paid_from || null,
+    due_date: f.paid_from ? null : (f.due_date || null), payee: f.payee, description: f.description,
+    client_id: f.client_id || null, project_id: f.project_id || null, billable: f.billable});
+  dlg.close(); render(); }, "Expense saved");
+window.payBillDlg = (id, bal) => openDlg("Mark as paid", `<form class="grid" id="pbF" onsubmit="event.preventDefault()"><label>Date paid<input type="date" name="date" value="${today()}"></label>
+  <label>Amount<input name="amount" value="${dollars(bal)}"></label><label>Paid from<select name="acct">${acctOpts(a => ["cash", "credit_card"].includes(a.subtype))}</select></label>
+  <label>Reference<input name="ref"></label><button type="button" class="b p" onclick="payBill(${id})">Save payment</button></form>`);
 window.payBill = id => act(async () => { const f = formData($("#pbF"));
-  await api(`/api/bills/${id}/pay`, {date: f.date, amount_cents: toCents(f.amount), paid_from_account_code: f.acct, reference: f.ref}); dlg.close(); render(); }, "Bill paid");
-window.voidBill = id => confirm("Void this bill?") && act(async () => { await api(`/api/bills/${id}/void`, {}); render(); }, "Bill voided");
-window.voidBillPay = id => confirm("Void this bill payment?") && act(async () => { await api(`/api/bill-payments/${id}/void`, {}); render(); }, "Payment voided");
+  await api(`/api/bills/${id}/pay`, {date: f.date, amount_cents: toCents(f.amount), paid_from_account_code: f.acct, reference: f.ref}); dlg.close(); render(); }, "Marked as paid");
+window.deleteExpense = id => confirm("Delete this expense?\n\nIt comes out of your expenses and, if it was paid, the money goes back into the account it was paid from. The books keep a record of the deletion.")
+  && act(async () => { await api(`/api/expenses/${id}/delete`, {}); render(); }, "Expense deleted");
+
+window.catsDlg = async () => { await loadCats();
+  const row = c => `<tr style="${c.is_active ? "" : "opacity:.55"}"><td><input value="${esc(c.name)}" aria-label="Category name" style="width:100%" onchange="renameCat(${c.id}, this.value)"></td>
+   <td class="n muted" style="width:90px">${c.uses ? `${c.uses} entr${c.uses === 1 ? "y" : "ies"}` : "unused"}</td>
+   <td class="n" style="width:90px">${c.is_system ? "" : `<button class="b" onclick="toggleCat(${c.id}, ${!c.is_active})">${c.is_active ? "Hide" : "Show"}</button>`}</td></tr>`;
+  openDlg("Expense categories", `<p class="muted" style="margin-top:0">Categories group your spending on the Profit &amp; Loss report. <b>Overhead</b> is the cost of running the agency (salaries, rent, software, marketing). <b>Client costs</b> are spent directly on client work (freelancers, production) and come off gross profit. Rename a category by editing its name. Hidden categories keep their history but leave the list.</p>
+  <form class="row" id="ncF" onsubmit="event.preventDefault();addCat()"><input name="name" placeholder="New category, e.g. Client Visits" style="flex:1;min-width:200px"><select name="kind"><option value="overhead">Overhead</option><option value="client">Client cost</option></select><button class="b p">Add category</button></form>
+  ${["overhead", "client", "media", "other"].map(k => { const list = CATS.filter(c => c.kind === k); return list.length ? `<h4 style="margin:18px 0 6px">${esc(KIND_LABEL[k])}</h4><table>${list.map(row).join("")}</table>` : ""; }).join("")}`); };
+window.addCat = () => act(async () => { const f = formData($("#ncF")); await api("/api/expense-categories", f); await catsDlg(); }, "Category added");
+window.renameCat = (id, name) => act(async () => { await api(`/api/accounts/${id}`, {name}); await loadCats(); }, "Renamed");
+window.toggleCat = (id, on) => act(async () => { await api(`/api/accounts/${id}`, {is_active: on}); await catsDlg(); }, on ? "Category shown" : "Category hidden");
 
 // ----- clients / projects / vendors -----
 VIEWS.clients = async () => {
@@ -482,9 +519,6 @@ window.projectForm = () => openDlg("New project", `<form class="grid" id="pF"><l
   <label>Project name<input name="name"></label><label>Budget (fee)<input name="budget" placeholder="0.00"></label></form>
   <div class="row"><button class="b p right" onclick="saveProject()">Save</button></div>`);
 window.saveProject = () => act(async () => { const f = formData($("#pF")); await api("/api/projects", {client_id: f.client_id, name: f.name, budget_cents: toCents(f.budget)}); dlg.close(); render(); }, "Saved");
-VIEWS.vendors = async () => page("Vendors", `<button class="b p" onclick="openDlg('New vendor', '<form class=grid id=vF><label>Name<input name=name></label><label>Email<input name=email></label></form><div class=row><button class=\\'b p right\\' onclick=saveVendor()>Save</button></div>')">+ Vendor</button>`,
-  `<div class="card"><table><tr><th>Name</th><th>Email</th></tr>${REF.vendors.map(v => `<tr><td>${esc(v.name)}</td><td>${esc(v.email)}</td></tr>`).join("") || '<tr><td colspan=2 class="muted">No vendors yet.</td></tr>'}</table></div>`);
-window.saveVendor = () => act(async () => { const f = formData($("#vF")); await api("/api/vendors", f); dlg.close(); render(); }, "Saved");
 
 // ----- banking -----
 VIEWS.banking = async () => {
@@ -550,7 +584,7 @@ window.acctForm = () => openDlg("New account", `<form class="grid" id="aF"><labe
   <div class="row"><button class="b p right" onclick="act(async()=>{await api('/api/accounts',formData($('#aF')));dlg.close();render()},'Account added')">Save</button></div>`);
 
 // ----- reports -----
-const REPORTS = {pnl: "Profit & Loss", bs: "Balance Sheet", tb: "Trial Balance", ar: "A/R Aging", ap: "A/P Aging", cp: "Client Profitability", pp: "Project Profitability", gl: "General Ledger"};
+const REPORTS = {pnl: "Profit & Loss", bs: "Balance Sheet", tb: "Trial Balance", ar: "A/R Aging", ap: "Unpaid Expenses", cp: "Client Profitability", pp: "Project Profitability", gl: "General Ledger"};
 VIEWS.reports = async (arg) => {
   const [r, glAcct] = (arg || "pnl").split(":"); const fy = (() => { const m = +REF.settings.fiscal_year_start_month, d = new Date(); let y = d.getFullYear(); if (d.getMonth() + 1 < m) y--; return `${y}-${String(m).padStart(2, "0")}-01`; })();
   const ranged = ["pnl", "cp", "pp", "gl"].includes(r);
@@ -595,12 +629,12 @@ window.runReport = r => act(async () => { const f = formData($("#rF")); const q 
      ${t.rows.map(x => `<tr class="click" onclick="location.hash='reports/gl:${x.code}'"><td>${x.code}</td><td>${esc(x.name)}</td><td class="n">${x.tb_debit_cents ? fmt(x.tb_debit_cents) : ""}</td><td class="n">${x.tb_credit_cents ? fmt(x.tb_credit_cents) : ""}</td></tr>`).join("")}
      <tr class="total"><td></td><td>Total</td><td class="n">${fmt(t.total_debit_cents)}</td><td class="n">${fmt(t.total_credit_cents)}</td></tr></table></div>
      <p>${t.balanced ? '<span style="color:var(--good)">✓ Debits equal credits</span>' : '<span class="neg">✗ Out of balance</span>'}</p>`; }
-  if (r === "ar" || r === "ap") { const a = await api(`/api/reports/${r}-aging?as_of=${f.as_of}`); const key = r === "ar" ? "client" : "vendor"; const rows = a["by_" + key];
+  if (r === "ar" || r === "ap") { const a = await api(`/api/reports/${r}-aging?as_of=${f.as_of}`); const key = r === "ar" ? "client" : "vendor"; const keyLabel = r === "ar" ? "Client" : "Paid to"; const rows = a["by_" + key];
     const B = ["current", "1_30", "31_60", "61_90", "over_90"], L = ["Current", "1–30", "31–60", "61–90", "90+"];
-    R.innerHTML = head(r === "ar" ? "Accounts Receivable Aging" : "Accounts Payable Aging", `As of ${a.as_of} · days past due`) + `<div class="wrap"><table><tr><th>${key[0].toUpperCase() + key.slice(1)}</th>${L.map(l => `<th class="n">${l}</th>`).join("")}<th class="n">Total</th></tr>
+    R.innerHTML = head(r === "ar" ? "Accounts Receivable Aging" : "Unpaid Expenses (Accounts Payable)", `As of ${a.as_of} · days past due`) + `<div class="wrap"><table><tr><th>${keyLabel}</th>${L.map(l => `<th class="n">${l}</th>`).join("")}<th class="n">Total</th></tr>
      ${rows.map(x => `<tr><td>${esc(x[key])}</td>${B.map(b => `<td class="n">${x[b] ? fmt(x[b]) : ""}</td>`).join("")}<td class="n"><b>${fmt(x.total)}</b></td></tr>`).join("") || '<tr><td colspan=7 class="muted">Nothing outstanding.</td></tr>'}
      <tr class="total"><td>Total</td>${B.map(b => `<td class="n">${fmt(a.totals[b])}</td>`).join("")}<td class="n">${fmt(a.totals.total)}</td></tr></table></div>
-     <h4>Detail</h4><div class="wrap"><table><tr><th>${r === "ar" ? "Invoice" : "Bill"}</th><th>${key}</th><th>Due</th><th class="n">Days late</th><th class="n">Balance</th></tr>
+     <h4>Detail</h4><div class="wrap"><table><tr><th>${r === "ar" ? "Invoice" : "Expense"}</th><th>${keyLabel}</th><th>Due</th><th class="n">Days late</th><th class="n">Balance</th></tr>
      ${a.items.map(i => `<tr ${r === "ar" ? `class="click" onclick="showInvoice(${i.invoice_id})"` : ""}><td>${esc(i.number || i.description)}</td><td>${esc(i[key])}</td><td>${i.due_date}</td><td class="n">${i.days_overdue}</td><td class="n">${fmt(i.balance_cents)}</td></tr>`).join("")}</table></div>`; }
   if (r === "cp") { const c = await api(`/api/reports/client-profitability?start=${f.start}&end=${f.end}`);
     R.innerHTML = head("Client Profitability", `${c.start} to ${c.end}`) + `<div class="wrap"><table><tr><th>Client</th><th class="n">Gross billings</th><th class="n">Pass-through</th><th class="n">Net revenue</th><th class="n">Direct costs</th><th class="n">Contribution</th><th class="n">Margin</th></tr>

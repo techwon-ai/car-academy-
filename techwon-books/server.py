@@ -144,6 +144,19 @@ def _(c, q, b):
 
 # ---- bills ----------------------------------------------------------------
 
+@route("POST", "/api/expenses")
+def _(c, q, b):
+    return {"id": L.record_expense(c, b.get("date"), b.get("amount_cents"), b.get("category_code"),
+                                   **_ids(b, "paid_from", "payee", "description", "due_date", "client_id",
+                                          "project_id", "billable", "reference"))}
+@route("POST", r"/api/expenses/(\d+)/delete")
+def _(c, q, b, bid): return L.delete_expense(c, bid, b.get("date"))
+@route("GET", "/api/payees")
+def _(c, q, b): return L.list_payees(c)
+@route("GET", "/api/expense-categories")
+def _(c, q, b): return L.expense_categories(c)
+@route("POST", "/api/expense-categories")
+def _(c, q, b): return {"code": L.create_expense_category(c, b.get("name"), b.get("kind", "overhead"))}
 @route("GET", "/api/bills")
 def _(c, q, b): return L.list_bills(c, q.get("status"))
 @route("POST", "/api/bills")

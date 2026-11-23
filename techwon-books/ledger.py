@@ -30,6 +30,8 @@ RETAINER_REVENUE = "4000"
 PASSTHROUGH_REVENUE = "4300"
 REIMBURSED_REVENUE = "4400"
 DISCOUNTS = "4950"
+ADDED_LATER = {DISCOUNTS, "6550"}
+GENERAL_PAYEE = "General expenses"  # used when an expense has no "paid to"
 
 ACCOUNT_TYPES = ("asset", "liability", "equity", "income", "expense")
 SUBTYPES = {
@@ -79,6 +81,7 @@ DEFAULT_ACCOUNTS = [
     ("6300", "Agency Marketing & New Business", "expense", "opex", 0),
     ("6400", "Legal & Accounting", "expense", "opex", 0),
     ("6500", "Travel & Meals", "expense", "opex", 0),
+    ("6550", "Client Visits & Meetings", "expense", "opex", 0),
     ("6600", "Office & Utilities", "expense", "opex", 0),
     ("6700", "Bank & Payment Processing Fees", "expense", "opex", 0),
     ("6800", "Depreciation", "expense", "opex", 0),
@@ -340,7 +343,7 @@ def init_db(conn):
                 "INSERT INTO accounts(code, name, type, subtype, is_system) VALUES (?,?,?,?,?)",
                 DEFAULT_ACCOUNTS)
         for code, name, typ, sub, system in DEFAULT_ACCOUNTS:
-            if code == DISCOUNTS:  # added after the first release
+            if code in ADDED_LATER:  # accounts added after the first release
                 conn.execute("INSERT INTO accounts(code, name, type, subtype, is_system) VALUES (?,?,?,?,?)"
                              " ON CONFLICT(code) DO NOTHING", (code, name, typ, sub, system))
 
@@ -1165,6 +1168,81 @@ def void_bill_payment(conn, bill_payment_id, date=None):
         conn.execute("UPDATE bill_payments SET voided = 1, void_entry_id = ? WHERE id = ?", (rid, p["id"]))
 
 
+def _payee_vendor(conn, payee):
+    """Expenses only need an optional 'paid to' name; it is kept as a vendor row behind the scenes."""
+    name = " ".join(str(payee or "").split())[:120] or GENERAL_PAYEE
+    row = conn.execute("SELECT id FROM vendors WHERE lower(name) = lower(?)", (name,)).fetchone()
+    if row:
+        return row[0]
+    return conn.execute("INSERT INTO vendors(name) VALUES (?)", (name,)).lastrowid
+
+
+def record_expense(conn, date, amount_cents, category_code, paid_from=None, payee="", description="",
+                   due_date=None, client_id=None, project_id=None, billable=False, reference=""):
+    """Record money spent. paid_from: a bank/cash/card account code, or empty for 'not paid yet'
+    (it then waits in Accounts Payable until paid)."""
+    with tx(conn):
+        acct = account_by_code(conn, category_code)
+        if acct["type"] != "expense":
+            raise LedgerError("Choose an expense category")
+        return create_bill(conn, _payee_vendor(conn, payee), date, amount_cents, acct["code"], description,
+                           due_date=due_date or None, client_id=client_id or None, project_id=project_id or None,
+                           billable=billable, reference=reference, paid_from=paid_from or None)
+
+
+def delete_expense(conn, bill_id, date=None):
+    """Void an expense together with its payments, all or nothing. It stays in the
+    journal as reversed entries; a rebilled or bank-reconciled expense is refused."""
+    with tx(conn):
+        b = _one(conn, "SELECT * FROM bills WHERE id = ?", (_int(bill_id, "bill_id"),), "Expense")
+        if b["status"] != "open":
+            raise LedgerError("This expense is already deleted")
+        if b["rebilled_invoice_id"]:
+            raise LedgerError("This expense was charged to a client on an invoice; delete or void that invoice first")
+        for p in conn.execute("SELECT id FROM bill_payments WHERE bill_id = ? AND voided = 0", (b["id"],)).fetchall():
+            void_bill_payment(conn, p["id"], date)
+        void_bill(conn, b["id"], date)
+
+
+def list_payees(conn):
+    return [r[0] for r in conn.execute("SELECT name FROM vendors WHERE name != ? ORDER BY lower(name)",
+                                       (GENERAL_PAYEE,))]
+
+
+CATEGORY_KINDS = {"overhead": ("opex", 6000, 6999), "client": ("cogs", 5100, 5999)}
+
+
+def expense_categories(conn):
+    rows = []
+    for a in conn.execute("SELECT a.*, (SELECT COUNT(*) FROM journal_lines l WHERE l.account_id = a.id) AS uses"
+                          " FROM accounts a WHERE a.type = 'expense' ORDER BY a.code"):
+        d = dict(a)
+        d["kind"] = {"opex": "overhead", "cogs": "client", "passthrough_cost": "media"}.get(a["subtype"], "other")
+        rows.append(d)
+    return rows
+
+
+def create_expense_category(conn, name, kind="overhead"):
+    name = " ".join(str(name or "").split())
+    if not name:
+        raise LedgerError("Enter a category name")
+    if kind not in CATEGORY_KINDS:
+        raise LedgerError("kind must be 'overhead' or 'client'")
+    subtype, lo, hi = CATEGORY_KINDS[kind]
+    with tx(conn):
+        if conn.execute("SELECT 1 FROM accounts WHERE lower(name) = lower(?)", (name,)).fetchone():
+            raise LedgerError(f"A category or account named '{name}' already exists")
+        used = {int(r[0]) for r in conn.execute("SELECT code FROM accounts") if str(r[0]).isdigit()}
+        top = max([c for c in used if lo <= c <= hi], default=lo - 10)
+        code = (top // 10 + 1) * 10
+        if code > hi or code in used:
+            code = next((c for c in range(lo, hi + 1) if c not in used), None)
+            if code is None:
+                raise LedgerError("No free account numbers left for this kind of category")
+        create_account(conn, str(code), name, "expense", subtype)
+        return str(code)
+
+
 def list_bills(conn, status=None):
     rows = []
     for r in conn.execute(
@@ -1223,7 +1301,8 @@ def create_rebill_invoice(conn, client_id, issue_date, markup_bp=0, bill_ids=Non
         for b in items:
             price = _round(Decimal(b["amount_cents"]) * (10000 + markup_bp) / Decimal(10000))
             lines.append({
-                "description": f"{b['description'] or 'Expense'} ({b['vendor_name']}, {b['bill_date']})",
+                "description": f"{b['description'] or 'Expense'} ("
+                               + (f"{b['vendor_name']}, " if b['vendor_name'] != GENERAL_PAYEE else "") + f"{b['bill_date']})",
                 "quantity": 1, "unit_price_cents": price, "bill_id": b["id"],
                 "revenue_account_code": PASSTHROUGH_REVENUE if b["expense_subtype"] == "passthrough_cost"
                 else REIMBURSED_REVENUE})

@@ -317,6 +317,57 @@ class BrandingTests(Base):
             L.update_settings(self.c, {"brand_color": "red; background:url(x)"})
 
 
+class ExpenseTests(Base):
+    def test_expense_paid_now_without_payee(self):
+        L.record_expense(self.c, "2026-03-01", 150000, "6000", paid_from="1000", description="March salaries")
+        d = L.dashboard(self.c, "2026-03-31")
+        self.assertEqual((d["cash_cents"], d["ap_cents"]), (-150000, 0))
+        self.assertEqual(L.list_bills(self.c)[0]["vendor_name"], L.GENERAL_PAYEE)
+        self.assertEqual(L.list_payees(self.c), ["Meta Ads"])  # the generic payee is hidden
+        self.tb_ok()
+
+    def test_expense_not_paid_yet_then_paid(self):
+        bid = L.record_expense(self.c, "2026-03-01", 20000, "6550", payee="  Careem   rides ",
+                               due_date="2026-03-15")
+        self.assertEqual(L.dashboard(self.c, "2026-03-31")["ap_cents"], 20000)
+        L.pay_bill(self.c, bid, "2026-03-10", 20000, "1000")
+        self.assertEqual(L.dashboard(self.c, "2026-03-31")["ap_cents"], 0)
+        L.record_expense(self.c, "2026-03-02", 100, "6550", payee="careem rides", paid_from="1000")
+        self.assertEqual(L.list_payees(self.c).count("Careem rides"), 1)  # same payee reused
+        with self.assertRaises(LedgerError):
+            L.record_expense(self.c, "2026-03-01", 100, "4100", paid_from="1000")  # not an expense
+        self.tb_ok()
+
+    def test_delete_paid_expense_is_atomic(self):
+        bid = L.record_expense(self.c, "2026-03-01", 5000, "6200", paid_from="1000")
+        L.delete_expense(self.c, bid, "2026-03-02")
+        d = L.dashboard(self.c, "2026-03-31")
+        self.assertEqual((d["cash_cents"], d["ap_cents"]), (0, 0))
+        self.assertEqual(L.list_bills(self.c)[0]["display_status"], "void")
+        # reconciled payment: nothing changes
+        bid2 = L.record_expense(self.c, "2026-03-05", 700, "6200", paid_from="1000")
+        ws = L.reconciliation_worksheet(self.c, "1000", "2026-03-31")
+        L.reconcile(self.c, "1000", "2026-03-31", -700, [l["id"] for l in ws["uncleared"]])
+        with self.assertRaises(LedgerError):
+            L.delete_expense(self.c, bid2)
+        self.assertEqual([b["display_status"] for b in L.list_bills(self.c) if b["id"] == bid2], ["paid"])
+        self.tb_ok()
+
+    def test_categories(self):
+        code = L.create_expense_category(self.c, "Office Snacks")
+        self.assertEqual(code, "6910")  # next ten after the highest overhead account (6900)
+        self.assertEqual(L.account_by_code(self.c, code)["subtype"], "opex")
+        ccode = L.create_expense_category(self.c, "Influencer Fees", kind="client")
+        self.assertEqual(L.account_by_code(self.c, ccode)["subtype"], "cogs")
+        with self.assertRaises(LedgerError):
+            L.create_expense_category(self.c, "office snacks")
+        cats = {c["name"]: c["kind"] for c in L.expense_categories(self.c)}
+        self.assertEqual((cats["Client Visits & Meetings"], cats["Pass-through Media Spend"]), ("overhead", "media"))
+        L.record_expense(self.c, "2026-03-01", 500, code, paid_from="1000")
+        pl = L.profit_and_loss(self.c, "2026-03-01", "2026-03-31")
+        self.assertIn("Office Snacks", [r["name"] for r in pl["opex"]])
+
+
 class RetainerTests(Base):
     def test_generate_is_idempotent(self):
         L.create_client(self.c, "No Retainer Co")
