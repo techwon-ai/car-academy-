@@ -319,7 +319,7 @@ const INVDOC_CSS = `
 .invdoc .totals .baldue td{font-weight:700;color:var(--ink);font-size:14px}
 .invdoc .terms{margin-top:28px}
 .invdoc .terms .t{font-size:12px;letter-spacing:.06em;text-transform:uppercase;margin-bottom:8px}
-.invdoc .terms .small{color:var(--ink);max-width:400px;font-size:12px;line-height:1.4}
+.invdoc .terms .small{color:var(--ink);max-width:640px;font-size:12px;line-height:1.4}
 .invdoc .thanks{margin-top:28px;padding-top:12px;padding-bottom:32px;border-top:1px solid var(--rule);text-align:center;color:var(--muted);font-size:12px}
 .invdoc .end{height:32px}
 @media (max-width:640px){.invdoc .pad{padding-left:22px;padding-right:22px}.invdoc .head{grid-template-columns:1fr;gap:10px}.invdoc .contact{padding-top:0}
@@ -633,7 +633,8 @@ VIEWS.settings = async () => { const s = REF.settings; await loadLogo();
   <label>Tax / VAT / GST number<input name="company_tax_id" value="${esc(s.company_tax_id)}"></label>
   <label>Brand colour<input type="color" name="brand_color" value="${esc(brandColor())}" style="height:34px;padding:2px"></label>
   <label style="grid-column:span 2">Payment details (shown under "Note to customer")<textarea name="payment_instructions" rows="3" placeholder="Bank: …&#10;Account: …&#10;Reference: invoice number">${esc(s.payment_instructions)}</textarea></label>
-  <label style="grid-column:1/-1">Terms &amp; conditions <span class="muted">(printed at the bottom of every invoice)</span><textarea name="invoice_terms" rows="6">${esc(s.invoice_terms)}</textarea></label>
+  <label style="grid-column:1/-1">Terms &amp; conditions <span class="muted">(printed at the bottom of every invoice; leave empty for none)</span><textarea name="invoice_terms" id="termsBox" rows="7">${esc(s.invoice_terms)}</textarea></label>
+  <div style="grid-column:1/-1;margin-top:-4px"><button type="button" class="b" onclick="$('#termsBox').value=REF.settings.short_terms;toast('Short terms filled in. Click Save branding to keep them.')">Use short standard terms</button></div>
   <label style="grid-column:span 2">Footer line <span class="muted">(optional)</span><input name="invoice_footer" value="${esc(s.invoice_footer)}"></label></form>
   <div class="row"><button class="b p right" onclick="act(async()=>{await api('/api/settings',formData($('#bF')));render()},'Invoice branding saved')">Save branding</button></div></div>
   <div class="card"><h3 style="margin-top:0">Books</h3><form class="grid" id="sF" onsubmit="event.preventDefault()">

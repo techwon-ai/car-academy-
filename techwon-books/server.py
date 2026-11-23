@@ -49,7 +49,7 @@ def _ids(body, *keys):
 # ---- reference data -------------------------------------------------------
 
 @route("GET", "/api/settings")
-def _(c, q, b): return L.get_settings(c)
+def _(c, q, b): return {**L.get_settings(c), "short_terms": L.SHORT_TERMS}
 @route("POST", "/api/settings")
 def _(c, q, b):
     _admin(c)

@@ -293,6 +293,23 @@ class BrandingTests(Base):
             with self.assertRaises(LedgerError):
                 L.set_logo(self.c, bad)
 
+    def test_short_terms_seeded_once(self):
+        self.assertEqual(L.get_settings(self.c)["invoice_terms"], L.SHORT_TERMS)  # new books
+        self.assertNotIn("terms_seeded", L.get_settings(self.c))
+        L.update_settings(self.c, {"invoice_terms": ""})  # user clears them
+        L.init_db(self.c)
+        self.assertEqual(L.get_settings(self.c)["invoice_terms"], "")  # stays cleared
+        L.update_settings(self.c, {"invoice_terms": "Our own terms"})
+        L.init_db(self.c)
+        self.assertEqual(L.get_settings(self.c)["invoice_terms"], "Our own terms")
+
+    def test_existing_books_with_empty_terms_get_them_once(self):
+        # like the live database: field present but empty, never seeded
+        self.c.execute("UPDATE settings SET value = '' WHERE key = 'invoice_terms'")
+        self.c.execute("DELETE FROM settings WHERE key = 'terms_seeded'")
+        L.init_db(self.c)
+        self.assertEqual(L.get_settings(self.c)["invoice_terms"], L.SHORT_TERMS)
+
     def test_company_settings(self):
         L.update_settings(self.c, {"company_address": "1 Main St", "brand_color": "#123abc"})
         self.assertEqual(L.get_settings(self.c)["brand_color"], "#123abc")

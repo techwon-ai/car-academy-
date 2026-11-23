@@ -86,6 +86,14 @@ DEFAULT_ACCOUNTS = [
     ("7000", "Interest Expense", "expense", "other_expense", 0),
 ]
 
+SHORT_TERMS = (
+    "1. 50% advance is required to start work; the balance is due on delivery.\n"
+    "2. The price covers the agreed scope only; extra work is billed separately.\n"
+    "3. Includes 2 rounds of design revisions.\n"
+    "4. Ownership of deliverables transfers on full payment.\n"
+    "5. Advances are non-refundable once work begins; cancellation after 50% completion requires full payment.\n"
+    "6. Approved refunds are processed within 14 business days.")
+
 DEFAULT_SETTINGS = {
     "company_name": "Techwon",
     "currency": "USD",
@@ -102,10 +110,12 @@ DEFAULT_SETTINGS = {
     "company_tax_id": "",
     "payment_instructions": "",
     "invoice_footer": "Thank you for your business.",
-    "invoice_terms": "",
+    "invoice_terms": SHORT_TERMS,
     "brand_color": "#1a73d1",
 }
 LOGO_KEY = "logo"  # stored in settings, but served separately because it can be large
+TERMS_SEEDED_KEY = "terms_seeded"
+INTERNAL_KEYS = (LOGO_KEY, TERMS_SEEDED_KEY)
 MAX_LOGO_CHARS = 700_000  # roughly a 500 KB image
 
 SCHEMA = """
@@ -319,6 +329,12 @@ def init_db(conn):
     with tx(conn):
         for k, v in DEFAULT_SETTINGS.items():
             conn.execute("INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING", (k, v))
+        # Books created before the standard terms existed got an empty field: fill it
+        # once. Never again after that, so terms a user clears stay cleared.
+        if not conn.execute("SELECT 1 FROM settings WHERE key = ?", (TERMS_SEEDED_KEY,)).fetchone():
+            conn.execute("UPDATE settings SET value = ? WHERE key = 'invoice_terms' AND value = ''", (SHORT_TERMS,))
+            conn.execute("INSERT INTO settings(key, value) VALUES (?, '1') ON CONFLICT(key) DO NOTHING",
+                         (TERMS_SEEDED_KEY,))
         if conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 0:
             conn.executemany(
                 "INSERT INTO accounts(code, name, type, subtype, is_system) VALUES (?,?,?,?,?)",
@@ -330,8 +346,8 @@ def init_db(conn):
 
 
 def get_settings(conn):
-    return {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM settings WHERE key != ?",
-                                                       (LOGO_KEY,))}
+    return {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM settings WHERE key NOT IN (?, ?)",
+                                                       INTERNAL_KEYS)}
 
 
 def get_logo(conn):
