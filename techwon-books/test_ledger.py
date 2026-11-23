@@ -198,6 +198,7 @@ class DiscountTests(Base):
         self.c.execute("ALTER TABLE invoices DROP COLUMN discount_value")
         self.c.execute("DELETE FROM accounts WHERE code = '4950'")
         self.c.execute("ALTER TABLE invoice_lines DROP COLUMN product")
+        self.c.execute("ALTER TABLE invoices DROP COLUMN quote_pct_bp")
         L.init_db(self.c)
         L.init_db(self.c)  # running twice is harmless
         inv = L.create_invoice(self.c, self.acme, "2026-02-01", [{"description": "x", "unit_price_cents": 5000}],
@@ -366,6 +367,80 @@ class ExpenseTests(Base):
         L.record_expense(self.c, "2026-03-01", 500, code, paid_from="1000")
         pl = L.profit_and_loss(self.c, "2026-03-01", "2026-03-31")
         self.assertIn("Office Snacks", [r["name"] for r in pl["opex"]])
+
+
+class QuoteTests(Base):
+    LINES = [{"product": "Website Development", "description": "3 websites", "quantity": 3, "unit_price_cents": 2500001},
+             {"product": "Hosting", "description": "1 year", "unit_price_cents": 1000000, "taxable": False}]
+
+    def quote(self, **kw):
+        return L.create_quote(self.c, self.acme, "2026-09-01", self.LINES, **kw)
+
+    def test_quote_has_no_effect_on_books(self):
+        qid = self.quote(tax_rate_bp=1000, discount_type="amount", discount_value=500000)
+        q = L.get_quote(self.c, qid)
+        self.assertEqual((q["number"], q["status"], q["valid_until"]), ("Q-1001", "draft", "2026-09-16"))
+        self.assertEqual(q["subtotal_cents"], 8500003)
+        self.assertEqual(self.c.execute("SELECT COUNT(*) FROM journal_entries").fetchone()[0], 0)
+        self.assertEqual(L.get_quote(self.c, self.quote())["number"], "Q-1002")
+
+    def test_full_conversion_matches_quote(self):
+        qid = self.quote(tax_rate_bp=1000, discount_type="percent", discount_value=1000)
+        inv = L.invoice_from_quote(self.c, qid, issue_date="2026-09-05")
+        q, i = L.get_quote(self.c, qid), L.get_invoice(self.c, inv)
+        self.assertEqual(i["total_cents"], q["total_cents"])
+        self.assertEqual((i["status"], i["quote_number"], q["display_status"]), ("draft", "Q-1001", "invoiced"))
+        self.assertEqual([l["product"] for l in i["lines"]], ["Website Development", "Hosting"])
+        with self.assertRaises(LedgerError):
+            L.invoice_from_quote(self.c, qid)  # nothing left
+        with self.assertRaises(LedgerError):
+            L.update_quote(self.c, qid, notes="change")  # locked once invoiced
+
+    def test_advance_and_balance_add_up_exactly(self):
+        qid = self.quote(tax_rate_bp=1600, discount_type="amount", discount_value=333333)
+        total = L.get_quote(self.c, qid)["total_cents"]
+        adv = L.invoice_from_quote(self.c, qid, 5000, issue_date="2026-09-02")
+        self.assertEqual(L.get_quote(self.c, qid)["display_status"], "part-invoiced")
+        self.assertIn("50% advance", L.get_invoice(self.c, adv)["lines"][0]["description"])
+        with self.assertRaisesRegex(LedgerError, "up to 50%"):
+            L.invoice_from_quote(self.c, qid, 6000)
+        bal = L.invoice_from_quote(self.c, qid, 5000, issue_date="2026-10-01")
+        self.assertIn("balance (50%)", L.get_invoice(self.c, bal)["lines"][0]["description"])
+        a, b2 = L.get_invoice(self.c, adv), L.get_invoice(self.c, bal)
+        self.assertEqual(a["subtotal_cents"] + b2["subtotal_cents"], L.get_quote(self.c, qid)["subtotal_cents"])
+        self.assertLessEqual(abs(a["total_cents"] + b2["total_cents"] - total), 1)  # tax rounding at most 1 paisa
+        L.issue_invoice(self.c, adv)
+        self.tb_ok()
+
+    def test_void_or_delete_invoice_frees_the_quote(self):
+        qid = self.quote()
+        inv = L.invoice_from_quote(self.c, qid, 5000)
+        with self.assertRaises(LedgerError):
+            L.delete_quote(self.c, qid)
+        L.delete_draft_invoice(self.c, inv)
+        self.assertEqual(L.get_quote(self.c, qid)["invoiced_bp"], 0)
+        inv2 = L.invoice_from_quote(self.c, qid, 10000, issue_date="2026-09-03")
+        L.issue_invoice(self.c, inv2)
+        L.void_invoice(self.c, inv2, "2026-09-04")
+        self.assertEqual(L.get_quote(self.c, qid)["invoiced_bp"], 0)
+        L.delete_quote(self.c, qid)  # only a void invoice pointed at it
+        self.assertEqual(L.get_invoice(self.c, inv2)["quote_id"], None)
+        self.tb_ok()
+
+    def test_status_expiry_duplicate_and_edit(self):
+        qid = self.quote(valid_until="2026-09-10")
+        self.assertEqual(L.get_quote(self.c, qid)["display_status"], "expired")  # today is after it
+        L.set_quote_status(self.c, qid, "declined")
+        self.assertEqual(L.get_quote(self.c, qid)["display_status"], "declined")
+        with self.assertRaises(LedgerError):
+            L.set_quote_status(self.c, qid, "maybe")
+        L.update_quote(self.c, qid, lines=[{"product": "Logo", "unit_price_cents": 5000}], valid_until="2099-01-01")
+        self.assertEqual(L.get_quote(self.c, qid)["total_cents"], 5000)
+        dup = L.duplicate_quote(self.c, qid, "2026-09-20")
+        d = L.get_quote(self.c, dup)
+        self.assertEqual((d["status"], d["total_cents"], d["number"]), ("draft", 5000, "Q-1002"))
+        with self.assertRaises(LedgerError):
+            L.update_quote(self.c, qid, valid_until="2026-08-01")  # before quote date
 
 
 class RetainerTests(Base):

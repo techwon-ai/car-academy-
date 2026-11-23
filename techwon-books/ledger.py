@@ -103,6 +103,9 @@ DEFAULT_SETTINGS = {
     "lock_date": "",
     "fiscal_year_start_month": "1",
     "invoice_prefix": "TW-",
+    "quote_prefix": "Q-",
+    "next_quote_number": "1001",
+    "quote_valid_days": "15",
     "next_invoice_number": "1001",
     "default_tax_rate_bp": "0",
     # shown on invoices
@@ -215,6 +218,33 @@ CREATE INDEX IF NOT EXISTS ix_lines_entry ON journal_lines(entry_id);
 CREATE INDEX IF NOT EXISTS ix_lines_client ON journal_lines(client_id);
 CREATE INDEX IF NOT EXISTS ix_entries_date ON journal_entries(date);
 
+CREATE TABLE IF NOT EXISTS quotes (
+  id INTEGER PRIMARY KEY,
+  number TEXT NOT NULL UNIQUE,
+  client_id INTEGER NOT NULL REFERENCES clients(id),
+  project_id INTEGER REFERENCES projects(id),
+  issue_date TEXT NOT NULL,
+  valid_until TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','sent','accepted','declined')),
+  tax_rate_bp INTEGER NOT NULL DEFAULT 0 CHECK (tax_rate_bp >= 0),
+  discount_type TEXT CHECK (discount_type IN ('percent','amount')),
+  discount_value INTEGER NOT NULL DEFAULT 0 CHECK (discount_value >= 0),
+  notes TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS quote_lines (
+  id INTEGER PRIMARY KEY,
+  quote_id INTEGER NOT NULL REFERENCES quotes(id) ON DELETE CASCADE,
+  product TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  quantity TEXT NOT NULL DEFAULT '1',
+  unit_price_cents INTEGER NOT NULL,
+  amount_cents INTEGER NOT NULL,
+  revenue_account_id INTEGER NOT NULL REFERENCES accounts(id),
+  taxable INTEGER NOT NULL DEFAULT 1
+);
+
 CREATE TABLE IF NOT EXISTS invoices (
   id INTEGER PRIMARY KEY,
   number TEXT UNIQUE,
@@ -229,7 +259,9 @@ CREATE TABLE IF NOT EXISTS invoices (
   notes TEXT NOT NULL DEFAULT '',
   retainer_period TEXT,
   entry_id INTEGER REFERENCES journal_entries(id),
-  void_entry_id INTEGER REFERENCES journal_entries(id)
+  void_entry_id INTEGER REFERENCES journal_entries(id),
+  quote_id INTEGER REFERENCES quotes(id),
+  quote_pct_bp INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS bills (
@@ -322,7 +354,9 @@ def init_db(conn):
             ("journal_entries", "created_by", "created_by TEXT"),
             ("invoices", "discount_type", "discount_type TEXT CHECK (discount_type IN ('percent','amount'))"),
             ("invoices", "discount_value", "discount_value INTEGER NOT NULL DEFAULT 0 CHECK (discount_value >= 0)"),
-            ("invoice_lines", "product", "product TEXT NOT NULL DEFAULT ''")):
+            ("invoice_lines", "product", "product TEXT NOT NULL DEFAULT ''"),
+            ("invoices", "quote_id", "quote_id INTEGER REFERENCES quotes(id)"),
+            ("invoices", "quote_pct_bp", "quote_pct_bp INTEGER")):
         if col not in conn.columns(table):
             try:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
@@ -392,6 +426,10 @@ def update_settings(conn, values):
     for k in ("company_address", "payment_instructions", "invoice_footer", "invoice_terms"):
         if k in values and len(str(values[k])) > 5000:
             raise LedgerError(f"{k} is too long")
+    if "next_quote_number" in values and _int(values["next_quote_number"], "next_quote_number") < 1:
+        raise LedgerError("next_quote_number must be positive")
+    if "quote_valid_days" in values and not 0 <= _int(values["quote_valid_days"], "quote_valid_days") <= 365:
+        raise LedgerError("quote_valid_days must be between 0 and 365")
     if "default_tax_rate_bp" in values:
         if _int(values["default_tax_rate_bp"], "default_tax_rate_bp") < 0:
             raise LedgerError("default_tax_rate_bp cannot be negative")
@@ -714,9 +752,12 @@ def create_vendor(conn, name, email=""):
 # Invoices (A/R)
 # --------------------------------------------------------------------------
 
-def _insert_invoice_lines(conn, invoice_id, lines):
+def _prepare_lines(conn, lines, what="invoice"):
+    """Validate document lines; returns rows of
+    (product, description, quantity, unit_price_cents, amount_cents, revenue_account_id, taxable, bill_id)."""
     if not lines:
-        raise LedgerError("An invoice needs at least one line")
+        raise LedgerError(f"A{'n' if what[0] in 'aeiou' else ''} {what} needs at least one line")
+    rows = []
     for i, ln in enumerate(lines, 1):
         product = str(ln.get("product") or "").strip()
         desc = str(ln.get("description") or "").strip()
@@ -727,11 +768,16 @@ def _insert_invoice_lines(conn, invoice_id, lines):
         acct = account_by_code(conn, ln.get("revenue_account_code") or "4100")
         if acct["type"] != "income":
             raise LedgerError(f"Line {i}: account {acct['code']} is not an income account")
+        rows.append((product[:200], desc, str(qty), price, _round(qty * price), acct["id"],
+                     1 if ln.get("taxable", True) else 0, ln.get("bill_id")))
+    return rows
+
+
+def _insert_invoice_lines(conn, invoice_id, lines):
+    for r in _prepare_lines(conn, lines, "invoice"):
         conn.execute(
             "INSERT INTO invoice_lines(invoice_id, product, description, quantity, unit_price_cents, amount_cents,"
-            " revenue_account_id, taxable, bill_id) VALUES (?,?,?,?,?,?,?,?,?)",
-            (invoice_id, product[:200], desc, str(qty), price, _round(qty * price), acct["id"],
-             1 if ln.get("taxable", True) else 0, ln.get("bill_id")))
+            " revenue_account_id, taxable, bill_id) VALUES (?,?,?,?,?,?,?,?,?)", (invoice_id, *r))
 
 
 def create_invoice(conn, client_id, issue_date, lines, due_date=None, project_id=None,
@@ -773,22 +819,25 @@ def _invoice_totals(conn, invoice_id):
                        (invoice_id,)).fetchone()[0]
     taxable = conn.execute("SELECT COALESCE(SUM(amount_cents),0) FROM invoice_lines WHERE invoice_id = ? AND taxable = 1",
                            (invoice_id,)).fetchone()[0]
-    if inv["discount_type"] == "percent":
-        discount = _round(Decimal(sub) * inv["discount_value"] / Decimal(10000))
-    elif inv["discount_type"] == "amount":
-        discount = inv["discount_value"]
+    t = _totals_math(sub, taxable, inv["tax_rate_bp"], inv["discount_type"], inv["discount_value"])
+    paid = conn.execute("SELECT COALESCE(SUM(amount_cents),0) FROM payments WHERE invoice_id = ? AND voided = 0",
+                        (invoice_id,)).fetchone()[0]
+    return {**t, "paid_cents": paid, "balance_cents": t["total_cents"] - paid}
+
+
+def _totals_math(sub, taxable, tax_rate_bp, discount_type, discount_value):
+    if discount_type == "percent":
+        discount = _round(Decimal(sub) * discount_value / Decimal(10000))
+    elif discount_type == "amount":
+        discount = discount_value
     else:
         discount = 0
     # The discount comes off before tax; with mixed lines it reduces the taxable
     # part in proportion to its share of the subtotal.
     if discount and sub > 0:
         taxable -= _round(Decimal(discount) * taxable / Decimal(sub))
-    tax = _round(Decimal(taxable) * inv["tax_rate_bp"] / Decimal(10000))
-    paid = conn.execute("SELECT COALESCE(SUM(amount_cents),0) FROM payments WHERE invoice_id = ? AND voided = 0",
-                        (invoice_id,)).fetchone()[0]
-    total = sub - discount + tax
-    return {"subtotal_cents": sub, "discount_cents": discount, "tax_cents": tax, "total_cents": total,
-            "paid_cents": paid, "balance_cents": total - paid}
+    tax = _round(Decimal(taxable) * tax_rate_bp / Decimal(10000))
+    return {"subtotal_cents": sub, "discount_cents": discount, "tax_cents": tax, "total_cents": sub - discount + tax}
 
 
 def _discount(discount_type, discount_value):
@@ -826,7 +875,8 @@ def _invoice_status(inv, totals, today=None):
 
 def get_invoice(conn, invoice_id):
     inv = _one(conn, "SELECT i.*, c.name AS client_name, c.email AS client_email, c.address AS client_address,"
-                     " p.name AS project_name FROM invoices i JOIN clients c ON c.id = i.client_id"
+                     " p.name AS project_name, q.number AS quote_number FROM invoices i JOIN clients c ON c.id = i.client_id"
+                     " LEFT JOIN quotes q ON q.id = i.quote_id"
                      " LEFT JOIN projects p ON p.id = i.project_id WHERE i.id = ?",
                (_int(invoice_id, "invoice_id"),), "Invoice")
     out = dict(inv)
@@ -1070,6 +1120,240 @@ def generate_retainer_invoices(conn, period, issue_date=None, auto_issue=True):
             number = issue_invoice(conn, inv_id) if auto_issue else None
             created.append({"invoice_id": inv_id, "client": c["name"], "number": number})
     return {"created": created, "skipped": skipped}
+
+
+# --------------------------------------------------------------------------
+# Quotations (no effect on the books until converted to an invoice)
+# --------------------------------------------------------------------------
+
+QUOTE_FIELDS = {"client_id", "project_id", "issue_date", "valid_until", "tax_rate_bp", "notes",
+                "discount_type", "discount_value"}
+
+
+def _quote(conn, quote_id):
+    return _one(conn, "SELECT * FROM quotes WHERE id = ?", (_int(quote_id, "quote_id"),), "Quotation")
+
+
+def _invoiced_bp(conn, quote_id):
+    return conn.execute("SELECT COALESCE(SUM(quote_pct_bp),0) FROM invoices WHERE quote_id = ? AND status != 'void'",
+                        (quote_id,)).fetchone()[0]
+
+
+def _quote_totals(conn, quote_id):
+    q = conn.execute("SELECT * FROM quotes WHERE id = ?", (quote_id,)).fetchone()
+    sub = conn.execute("SELECT COALESCE(SUM(amount_cents),0) FROM quote_lines WHERE quote_id = ?", (quote_id,)).fetchone()[0]
+    taxable = conn.execute("SELECT COALESCE(SUM(amount_cents),0) FROM quote_lines WHERE quote_id = ? AND taxable = 1",
+                           (quote_id,)).fetchone()[0]
+    t = _totals_math(sub, taxable, q["tax_rate_bp"], q["discount_type"], q["discount_value"])
+    return {**t, "invoiced_bp": _invoiced_bp(conn, quote_id)}
+
+
+def _quote_status(q, t, today=None):
+    if t["invoiced_bp"] >= 10000:
+        return "invoiced"
+    if t["invoiced_bp"] > 0:
+        return "part-invoiced"
+    if q["status"] in ("draft", "sent") and q["valid_until"] < (today or _today()):
+        return "expired"
+    return q["status"]
+
+
+def _check_quote(conn, quote_id):
+    t = _quote_totals(conn, quote_id)
+    if t["discount_cents"] > t["subtotal_cents"]:
+        raise LedgerError("The discount is larger than the quotation subtotal")
+    if t["total_cents"] <= 0:
+        raise LedgerError("Quotation total must be greater than zero")
+    return t
+
+
+def _write_quote_lines(conn, quote_id, lines):
+    conn.execute("DELETE FROM quote_lines WHERE quote_id = ?", (quote_id,))
+    for r in _prepare_lines(conn, lines, "quotation"):
+        conn.execute("INSERT INTO quote_lines(quote_id, product, description, quantity, unit_price_cents, amount_cents,"
+                     " revenue_account_id, taxable) VALUES (?,?,?,?,?,?,?,?)", (quote_id, *r[:7]))
+
+
+def _quote_header(conn, fields, current=None):
+    """Validate header fields for a new quote (current=None) or an edit."""
+    bad = set(fields) - QUOTE_FIELDS
+    if bad:
+        raise LedgerError(f"Unknown quotation field(s): {', '.join(sorted(bad))}")
+    out = {}
+    client_id = fields.get("client_id", current["client_id"] if current else None)
+    c = _client(conn, client_id)
+    if "client_id" in fields or not current:
+        if not c["is_active"]:
+            raise LedgerError("Client is inactive")
+        out["client_id"] = c["id"]
+    for k in ("issue_date", "valid_until"):
+        if fields.get(k):
+            out[k] = _date(fields[k], k)
+    if "tax_rate_bp" in fields and fields["tax_rate_bp"] not in (None, ""):
+        out["tax_rate_bp"] = _int(fields["tax_rate_bp"], "tax_rate_bp")
+        if out["tax_rate_bp"] < 0:
+            raise LedgerError("tax_rate_bp cannot be negative")
+    if "project_id" in fields:
+        out["project_id"] = _project(conn, fields["project_id"], c["id"])["id"] if fields["project_id"] else None
+    elif current and "client_id" in out and current["project_id"] and out["client_id"] != current["client_id"]:
+        out["project_id"] = None
+    if "notes" in fields:
+        out["notes"] = str(fields["notes"] or "")
+    if "discount_type" in fields or "discount_value" in fields:
+        out["discount_type"], out["discount_value"] = _discount(
+            fields.get("discount_type", current["discount_type"] if current else None),
+            fields.get("discount_value", current["discount_value"] if current else 0))
+    return out
+
+
+def create_quote(conn, client_id, issue_date, lines, **fields):
+    with tx(conn):
+        h = _quote_header(conn, {**fields, "client_id": client_id, "issue_date": issue_date})
+        s = get_settings(conn)
+        if "valid_until" not in h:
+            h["valid_until"] = (dt.date.fromisoformat(h["issue_date"])
+                                + dt.timedelta(days=int(s["quote_valid_days"]))).isoformat()
+        if h["valid_until"] < h["issue_date"]:
+            raise LedgerError("valid_until cannot be before the quotation date")
+        h.setdefault("tax_rate_bp", int(s["default_tax_rate_bp"]))
+        n = int(s["next_quote_number"])
+        while conn.execute("SELECT 1 FROM quotes WHERE number = ?", (f"{s['quote_prefix']}{n}",)).fetchone():
+            n += 1
+        conn.execute("UPDATE settings SET value = ? WHERE key = 'next_quote_number'", (str(n + 1),))
+        h["number"] = f"{s['quote_prefix']}{n}"
+        cols = list(h)
+        qid = conn.execute(f"INSERT INTO quotes({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                           [h[c] for c in cols]).lastrowid
+        _write_quote_lines(conn, qid, lines)
+        _check_quote(conn, qid)
+        return qid
+
+
+def update_quote(conn, quote_id, lines=None, **fields):
+    with tx(conn):
+        q = _quote(conn, quote_id)
+        if _invoiced_bp(conn, q["id"]):
+            raise LedgerError("This quotation has been invoiced, so it can't change. Duplicate it to make a new version.")
+        h = _quote_header(conn, fields, q)
+        for k, v in h.items():
+            conn.execute(f"UPDATE quotes SET {k} = ? WHERE id = ?", (v, q["id"]))
+        q = conn.execute("SELECT * FROM quotes WHERE id = ?", (q["id"],)).fetchone()
+        if q["valid_until"] < q["issue_date"]:
+            raise LedgerError("valid_until cannot be before the quotation date")
+        if lines is not None:
+            _write_quote_lines(conn, q["id"], lines)
+        _check_quote(conn, q["id"])
+
+
+def set_quote_status(conn, quote_id, status):
+    if status not in ("draft", "sent", "accepted", "declined"):
+        raise LedgerError("status must be draft, sent, accepted or declined")
+    with tx(conn):
+        q = _quote(conn, quote_id)
+        if status in ("declined", "draft") and _invoiced_bp(conn, q["id"]):
+            raise LedgerError("This quotation has already been invoiced")
+        conn.execute("UPDATE quotes SET status = ? WHERE id = ?", (status, q["id"]))
+
+
+def delete_quote(conn, quote_id):
+    with tx(conn):
+        q = _quote(conn, quote_id)
+        if conn.execute("SELECT 1 FROM invoices WHERE quote_id = ? AND status != 'void'", (q["id"],)).fetchone():
+            raise LedgerError("This quotation has invoices; delete or void them first")
+        conn.execute("UPDATE invoices SET quote_id = NULL WHERE quote_id = ?", (q["id"],))
+        conn.execute("DELETE FROM quote_lines WHERE quote_id = ?", (q["id"],))
+        conn.execute("DELETE FROM quotes WHERE id = ?", (q["id"],))
+
+
+def _quote_lines_for_copy(conn, quote_id):
+    return [{"product": l["product"], "description": l["description"], "quantity": l["quantity"],
+             "unit_price_cents": l["unit_price_cents"], "revenue_account_code": l["code"], "taxable": bool(l["taxable"])}
+            for l in conn.execute("SELECT l.*, a.code FROM quote_lines l JOIN accounts a ON a.id = l.revenue_account_id"
+                                  " WHERE quote_id = ? ORDER BY l.id", (quote_id,))]
+
+
+def duplicate_quote(conn, quote_id, issue_date=None):
+    with tx(conn):
+        q = _quote(conn, quote_id)
+        return create_quote(conn, q["client_id"], issue_date or _today(), _quote_lines_for_copy(conn, q["id"]),
+                            project_id=q["project_id"], tax_rate_bp=q["tax_rate_bp"], notes=q["notes"],
+                            discount_type=q["discount_type"], discount_value=q["discount_value"])
+
+
+def invoice_from_quote(conn, quote_id, percent_bp=10000, issue_date=None, due_date=None):
+    """Create a DRAFT invoice for all or part of a quotation (e.g. 5000 = a 50% advance).
+    The last part bills exactly what is left, so the parts add up to the quotation."""
+    percent_bp = _int(percent_bp, "percent_bp")
+    with tx(conn):
+        q = _quote(conn, quote_id)
+        done = _invoiced_bp(conn, q["id"])
+        left = 10000 - done
+        if left <= 0:
+            raise LedgerError("This quotation has already been fully invoiced")
+        if not 0 < percent_bp <= left:
+            raise LedgerError(f"You can invoice up to {left / 100:g}% of this quotation")
+        is_last = percent_bp == left
+        pct_txt = f"{percent_bp / 100:g}%"
+        label = ("" if percent_bp == 10000 else f"{pct_txt} advance" if done == 0
+                 else f"balance ({pct_txt})" if is_last else f"part payment ({pct_txt})")
+
+        def part(amount):  # this invoice's share of an amount
+            if percent_bp == 10000:
+                return amount
+            if is_last:
+                return amount - _round(Decimal(amount) * done / Decimal(10000))
+            return _round(Decimal(amount) * percent_bp / Decimal(10000))
+
+        lines = []
+        for l in _quote_lines_for_copy(conn, q["id"]):
+            if percent_bp == 10000:
+                lines.append(l)
+                continue
+            amount = _round(_qty(l["quantity"]) * l["unit_price_cents"])
+            desc = f"{l['description']} - {label}" if l["description"] else label
+            lines.append({**l, "description": desc, "quantity": "1", "unit_price_cents": part(amount)})
+        dvalue = q["discount_value"]
+        if q["discount_type"] == "amount" and percent_bp != 10000:
+            dvalue = part(dvalue)
+        notes = "\n".join(x for x in (f"Quotation {q['number']}" + (f": {label}" if label else ""), q["notes"]) if x)
+        inv_id = create_invoice(conn, q["client_id"], issue_date or _today(), lines, due_date=due_date,
+                                project_id=q["project_id"], tax_rate_bp=q["tax_rate_bp"], notes=notes,
+                                discount_type=q["discount_type"],
+                                discount_value=dvalue if q["discount_type"] else 0)
+        conn.execute("UPDATE invoices SET quote_id = ?, quote_pct_bp = ? WHERE id = ?", (q["id"], percent_bp, inv_id))
+        if q["status"] in ("draft", "sent"):
+            conn.execute("UPDATE quotes SET status = 'accepted' WHERE id = ?", (q["id"],))
+        return inv_id
+
+
+def get_quote(conn, quote_id):
+    q = _one(conn, "SELECT q.*, c.name AS client_name, c.email AS client_email, c.address AS client_address,"
+                   " p.name AS project_name FROM quotes q JOIN clients c ON c.id = q.client_id"
+                   " LEFT JOIN projects p ON p.id = q.project_id WHERE q.id = ?",
+             (_int(quote_id, "quote_id"),), "Quotation")
+    out = dict(q)
+    t = _quote_totals(conn, q["id"])
+    out.update(t)
+    out["display_status"] = _quote_status(q, t)
+    out["lines"] = [dict(r) for r in conn.execute(
+        "SELECT l.*, a.code AS revenue_account_code FROM quote_lines l JOIN accounts a ON a.id = l.revenue_account_id"
+        " WHERE quote_id = ? ORDER BY l.id", (q["id"],))]
+    out["invoices"] = [dict(r) for r in conn.execute(
+        "SELECT id, number, status, issue_date, quote_pct_bp FROM invoices WHERE quote_id = ? ORDER BY id", (q["id"],))]
+    return out
+
+
+def list_quotes(conn):
+    rows = []
+    for q in conn.execute("SELECT q.*, c.name AS client_name, p.name AS project_name FROM quotes q"
+                          " JOIN clients c ON c.id = q.client_id LEFT JOIN projects p ON p.id = q.project_id"
+                          " ORDER BY q.issue_date DESC, q.id DESC").fetchall():
+        d = dict(q)
+        t = _quote_totals(conn, q["id"])
+        d.update(t)
+        d["display_status"] = _quote_status(q, t)
+        rows.append(d)
+    return rows
 
 
 # --------------------------------------------------------------------------

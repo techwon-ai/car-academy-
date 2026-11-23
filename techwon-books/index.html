@@ -117,7 +117,7 @@ const projectOpts = (clientId, sel) => opt("", "— none —") + REF.projects.fi
   .map(p => opt(p.id, clientId ? p.name : `${p.client_name} · ${p.name}`, sel)).join("");
 
 // ---------- routing ----------
-const PAGES = {dashboard: "Dashboard", invoices: "Invoices", expenses: "Expenses", clients: "Clients & Projects",
+const PAGES = {dashboard: "Dashboard", quotes: "Quotations", invoices: "Invoices", expenses: "Expenses", clients: "Clients & Projects",
   banking: "Bank Reconciliation", journal: "Journal Entries", accounts: "Chart of Accounts",
   reports: "Reports", settings: "Settings", users: "Users"};
 let SESSION = {login_required: false, user: null};
@@ -129,7 +129,7 @@ function nav() { const pages = Object.entries(PAGES).filter(([k]) => k !== "user
   $("#nav").querySelectorAll("button[data-p]").forEach(b => b.onclick = () => location.hash = b.dataset.p); }
 async function render() { if (!$("#nav")) return; nav(); const [p, arg] = (location.hash.slice(1) || "dashboard").split("/");
   try { await loadRef(); await (VIEWS[p] || VIEWS.dashboard)(arg); } catch (e) { $("#main").innerHTML = `<div class="card neg">${esc(e.message)}</div>`; } }
-window.addEventListener("hashchange", render);
+window.addEventListener("hashchange", () => { if (dlg.open) dlg.close(); render(); }); // a page change closes any open window
 const page = (title, actions, body) => $("#main").innerHTML = `<header class="top"><h2>${title}</h2>${actions || ""}</header>${body}`;
 
 // ---------- sign in ----------
@@ -297,6 +297,7 @@ const INVDOC_CSS = `
 .invdoc .lbl{font-weight:700;font-size:12.5px;margin-bottom:3px}
 .invdoc .billto .name{text-transform:uppercase;font-size:13.5px}
 .invdoc .dash{border-top:1px dashed #b9c9da;margin:18px 0 16px}
+.invdoc table.details{width:auto;border-collapse:collapse}
 .invdoc .details td{padding:1px 14px 1px 0;font-size:13px}
 .invdoc .details td:first-child{color:var(--muted)}
 .invdoc .stamp{display:inline-block;transform:rotate(-5deg);border:2.5px solid currentColor;border-radius:6px;padding:2px 12px;
@@ -310,8 +311,8 @@ const INVDOC_CSS = `
 .invdoc .items .num{color:var(--muted);width:28px}
 .invdoc .n,.invdoc .items th.n{text-align:right;white-space:nowrap}
 .invdoc .lower{display:grid;grid-template-columns:1fr minmax(260px,300px);gap:40px;margin-top:10px}
-.invdoc .note h3{margin:22px 0 6px;font-size:15px;font-weight:600}
-.invdoc .note .small{color:var(--ink)}
+.invdoc .cnote h3{margin:22px 0 6px;font-size:15px;font-weight:600}
+.invdoc .cnote .small{color:var(--ink)}
 .invdoc .totals{border-collapse:collapse;width:100%}
 .invdoc .totals td{padding:7px 0;font-size:12.5px}
 .invdoc .totals td:first-child{color:var(--muted);padding-left:16px}
@@ -337,7 +338,7 @@ const termsLabel = i => { const days = Math.round((new Date(i.due_date) - new Da
 function invoiceDoc(i) {
   const s = REF.settings;
   const contact = [s.company_email, s.company_phone, s.company_website].filter(Boolean).join("\n");
-  const stamp = {paid: "PAID", void: "VOID", draft: "DRAFT", overdue: "OVERDUE"}[i.display_status];
+  const stamp = {paid: "PAID", void: "VOID", draft: "DRAFT", overdue: "OVERDUE"}[i.display_status], stampClass = i.display_status;
   const balance = i.status === "issued" ? i.balance_cents : i.status === "draft" ? i.total_cents : 0;
   const note = [i.notes, s.payment_instructions].filter(Boolean).join("\n\n");
   const hasProduct = i.lines.some(l => l.product);
@@ -348,7 +349,7 @@ function invoiceDoc(i) {
    <div class="logo">${LOGO ? `<img src="${esc(LOGO)}" alt="${esc(s.company_name)}">` : `<div class="wordmark">${esc(s.company_name.toUpperCase())}</div>`}</div></div>
   <div class="band pad"><div class="row2"><div class="billto"><div class="lbl">Bill to</div><div class="name">${esc(i.client_name)}</div>
      <div class="small">${esc([i.client_address, i.client_email].filter(Boolean).join("\n"))}</div></div>
-    <div style="text-align:right">${stamp ? `<span class="stamp ${i.display_status}">${stamp}</span>` : ""}</div></div>
+    <div style="text-align:right">${stamp ? `<span class="stamp ${stampClass}">${stamp}</span>` : ""}</div></div>
    <div class="dash"></div>
    <div class="lbl">Invoice details</div>
    <table class="details"><tr><td>Invoice no.:</td><td>${esc(i.number || "Draft")}</td></tr><tr><td>Terms:</td><td>${termsLabel(i)}</td></tr>
@@ -357,7 +358,7 @@ function invoiceDoc(i) {
   <div class="pad"><div class="itemwrap"><table class="items"><tr><th class="num">#</th>${hasProduct ? "<th>Product or service</th>" : ""}<th class="hide-sm">Description</th><th class="n">Qty</th><th class="n">Rate</th><th class="n">Amount</th></tr>
    ${i.lines.map((l, k) => `<tr><td class="num">${k + 1}.</td>${hasProduct ? `<td class="prod">${esc(l.product)}</td>` : ""}<td class="hide-sm">${esc(l.description)}</td>
     <td class="n">${esc(l.quantity)}</td><td class="n">${fmt(l.unit_price_cents)}</td><td class="n">${fmt(l.amount_cents)}</td></tr>`).join("")}</table></div>
-   <div class="lower"><div class="note">${note ? `<h3>Note to customer</h3><div class="small">${esc(note)}</div>` : ""}</div>
+   <div class="lower"><div class="cnote">${note ? `<h3>Note to customer</h3><div class="small">${esc(note)}</div>` : ""}</div>
     <table class="totals"><tr><td>Subtotal</td><td class="n">${fmt(i.subtotal_cents)}</td></tr>
      ${i.discount_cents ? `<tr><td>Discount${i.discount_type === "percent" ? ` (${i.discount_value / 100}%)` : ""}</td><td class="n">-${fmt(i.discount_cents)}</td></tr>` : ""}
      ${i.tax_rate_bp ? `<tr><td>Tax (${i.tax_rate_bp / 100}%)</td><td class="n">${fmt(i.tax_cents)}</td></tr>` : ""}
@@ -366,6 +367,89 @@ function invoiceDoc(i) {
      ${i.paid_cents && i.status === "issued" ? `<tr class="baldue"><td>Balance due</td><td class="n">${fmt(balance)}</td></tr>` : ""}</table></div>
    ${s.invoice_terms ? `<div class="terms"><div class="t">Terms &amp; Conditions</div><div class="small">${esc(s.invoice_terms)}</div></div>` : ""}
    ${s.invoice_footer ? `<div class="thanks">${esc(s.invoice_footer)}</div>` : `<div class="end"></div>`}</div></div>`;
+}
+
+// ----- quotation document: deliberately different from the invoice -----
+const QDOC_CSS = `
+.qdoc{--brand:#1a73d1;--navy:#0f2742;--ink:#1d2731;--muted:#617080;--rule:#e2e7ee;--tint:#f1f6fc;background:#fff;color:var(--ink);color-scheme:light;
+ font:13px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Open Sans",Helvetica,Arial,sans-serif;max-width:860px;margin:0 auto;
+ font-variant-numeric:tabular-nums;overflow:hidden}
+.qdoc *{box-sizing:border-box}
+.qdoc td,.qdoc th{border:0;padding:0;white-space:normal;vertical-align:top}
+.qdoc .pad{padding-left:52px;padding-right:52px}
+.qdoc .hero{background:var(--navy);color:#fff;padding-top:36px;padding-bottom:30px;background-image:linear-gradient(120deg,var(--navy) 60%,color-mix(in srgb,var(--brand) 45%,var(--navy)))}
+.qdoc .top{display:flex;justify-content:space-between;align-items:center;gap:20px;flex-wrap:wrap}
+.qdoc .top img{max-height:46px;max-width:220px;display:block}
+.qdoc .wordmark{font-size:22px;font-weight:800;letter-spacing:.14em;color:#fff}
+.qdoc .title{text-align:right}
+.qdoc .title .k{font-size:12px;letter-spacing:.32em;color:#9fc3ee;font-weight:600}
+.qdoc .title .num{font-size:26px;font-weight:700;letter-spacing:.02em;margin-top:2px}
+.qdoc .facts{display:grid;grid-template-columns:1.6fr 1fr 1fr 1.3fr;gap:18px;margin-top:30px;padding-top:20px;border-top:1px solid #ffffff2b}
+.qdoc .facts .l{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:#9fb6d0;margin-bottom:4px}
+.qdoc .facts .v{font-size:14px;font-weight:600}
+.qdoc .facts .sub{font-size:12px;color:#c5d4e6;white-space:pre-line;font-weight:400}
+.qdoc .facts .big{font-size:22px;font-weight:700}
+.qdoc .bodyhead{display:flex;justify-content:space-between;align-items:center;margin-top:32px}
+.qdoc h2{margin:0;font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--brand)}
+.qdoc .stamp{display:inline-block;transform:rotate(-4deg);border:2.5px solid currentColor;border-radius:6px;padding:1px 10px;font-size:13px;font-weight:800;letter-spacing:.18em}
+.qdoc .stamp.ok{color:#16794a}.qdoc .stamp.bad{color:#c0262d}.qdoc .stamp.draft{color:#9a6700}.qdoc .stamp.sent{color:var(--brand)}
+.qdoc .itemwrap{overflow-x:auto;margin-top:12px}
+.qdoc table.items{width:100%;border-collapse:separate;border-spacing:0}
+.qdoc .items th{background:var(--tint);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);text-align:left;padding:10px 12px;font-weight:600}
+.qdoc .items th:first-child{border-radius:8px 0 0 8px}.qdoc .items th:last-child{border-radius:0 8px 8px 0}
+.qdoc .items td{padding:13px 12px;border-bottom:1px solid var(--rule)}
+.qdoc .items .item b{display:block;font-size:13.5px}
+.qdoc .items .item span{color:var(--muted);font-size:12.5px}
+.qdoc .items .num{color:var(--muted);width:30px}
+.qdoc .n,.qdoc .items th.n{text-align:right;white-space:nowrap}
+.qdoc .lower{display:grid;grid-template-columns:1fr minmax(260px,310px);gap:36px;margin-top:22px;align-items:start}
+.qdoc .notes .l{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;font-weight:600}
+.qdoc .notes p{margin:0;white-space:pre-line}
+.qdoc .card{background:var(--tint);border-radius:10px;overflow:hidden}
+.qdoc .card table{width:100%;border-collapse:collapse}
+.qdoc .card td{padding:9px 16px;font-size:12.5px}
+.qdoc .card td:first-child{color:var(--muted)}
+.qdoc .card .tot td{background:var(--brand);color:#fff;font-weight:700;font-size:15px;padding:13px 16px}
+.qdoc .card .tot td.n{font-size:18px}
+.qdoc .accept{margin-top:34px;border:1.5px dashed #b7c6d8;border-radius:12px;padding:20px 22px}
+.qdoc .accept .h{font-weight:700;font-size:14px}
+.qdoc .accept .s{color:var(--muted);font-size:12.5px;margin-top:2px}
+.qdoc .sig{display:grid;grid-template-columns:2fr 1.5fr 1fr;gap:22px;margin-top:34px;font-size:11px;color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
+.qdoc .sig span{display:block;border-top:1px solid #8c96a0;margin-bottom:5px}
+.qdoc .terms{margin-top:28px}
+.qdoc .terms .l{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;font-weight:600}
+.qdoc .terms p{margin:0;white-space:pre-line;font-size:12px;line-height:1.45;max-width:640px}
+.qdoc .foot{margin-top:30px;padding-top:14px;padding-bottom:30px;border-top:1px solid var(--rule);color:var(--muted);font-size:11.5px;text-align:center}
+@media (max-width:640px){.qdoc .pad{padding-left:20px;padding-right:20px}.qdoc .facts{grid-template-columns:1fr 1fr}.qdoc .title{text-align:left}
+ .qdoc .lower{grid-template-columns:1fr;gap:18px}.qdoc .items{min-width:420px}.qdoc .sig{grid-template-columns:1fr;gap:26px}}
+@media print{.qdoc{max-width:none}.qdoc .pad{padding-left:14mm;padding-right:14mm}.qdoc .hero,.qdoc .items th,.qdoc .card,.qdoc .card .tot td{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+ .qdoc .items tr,.qdoc .lower,.qdoc .accept,.qdoc .terms{break-inside:avoid}}`;
+document.head.insertAdjacentHTML("beforeend", `<style>${QDOC_CSS}</style>`);
+function quoteDoc(q) {
+  const s = REF.settings;
+  const stamp = {draft: ["DRAFT", "draft"], sent: ["SENT", "sent"], accepted: ["ACCEPTED", "ok"], "part-invoiced": ["ACCEPTED", "ok"],
+    invoiced: ["ACCEPTED", "ok"], declined: ["DECLINED", "bad"], expired: ["EXPIRED", "bad"]}[q.display_status];
+  const contact = [s.company_name, s.company_address.replace(/\n+/g, ", "), s.company_email, s.company_phone, s.company_website].filter(Boolean).join("  ·  ");
+  return `<div class="qdoc" style="--brand:${brandColor()}">
+  <div class="hero pad"><div class="top"><div>${LOGO ? `<img src="${esc(LOGO)}" alt="${esc(s.company_name)}">` : `<div class="wordmark">${esc(s.company_name.toUpperCase())}</div>`}</div>
+    <div class="title"><div class="k">QUOTATION</div><div class="num">${esc(q.number)}</div></div></div>
+   <div class="facts"><div><div class="l">Prepared for</div><div class="v">${esc(q.client_name)}</div><div class="sub">${esc([q.client_address, q.client_email].filter(Boolean).join("\n"))}</div></div>
+    <div><div class="l">Date</div><div class="v">${niceDate(q.issue_date)}</div></div>
+    <div><div class="l">Valid until</div><div class="v">${niceDate(q.valid_until)}</div></div>
+    <div><div class="l">Total</div><div class="big">${fmt(q.total_cents)}</div>${q.project_name ? `<div class="sub">${esc(q.project_name)}</div>` : ""}</div></div></div>
+  <div class="pad"><div class="bodyhead"><h2>Scope &amp; pricing</h2>${stamp ? `<span class="stamp ${stamp[1]}">${stamp[0]}</span>` : ""}</div>
+   <div class="itemwrap"><table class="items"><tr><th class="num">#</th><th>Item</th><th class="n">Qty</th><th class="n">Rate</th><th class="n">Amount</th></tr>
+    ${q.lines.map((l, k) => `<tr><td class="num">${String(k + 1).padStart(2, "0")}</td><td class="item"><b>${esc(l.product || l.description)}</b>${l.product && l.description ? `<span>${esc(l.description)}</span>` : ""}</td>
+     <td class="n">${esc(l.quantity)}</td><td class="n">${fmt(l.unit_price_cents)}</td><td class="n">${fmt(l.amount_cents)}</td></tr>`).join("")}</table></div>
+   <div class="lower"><div class="notes">${q.notes ? `<div class="l">Notes</div><p>${esc(q.notes)}</p>` : ""}</div>
+    <div class="card"><table><tr><td>Subtotal</td><td class="n">${fmt(q.subtotal_cents)}</td></tr>
+     ${q.discount_cents ? `<tr><td>Discount${q.discount_type === "percent" ? ` (${q.discount_value / 100}%)` : ""}</td><td class="n">-${fmt(q.discount_cents)}</td></tr>` : ""}
+     ${q.tax_rate_bp ? `<tr><td>Tax (${q.tax_rate_bp / 100}%)</td><td class="n">${fmt(q.tax_cents)}</td></tr>` : ""}
+     <tr class="tot"><td>Total</td><td class="n">${fmt(q.total_cents)}</td></tr></table></div></div>
+   <div class="accept"><div class="h">Accepted by</div><div class="s">Sign and return this quotation by ${niceDate(q.valid_until)} to go ahead. Prices are valid until then.</div>
+    <div class="sig"><div><span></span>Signature</div><div><span></span>Name</div><div><span></span>Date</div></div></div>
+   ${s.invoice_terms ? `<div class="terms"><div class="l">Terms &amp; conditions</div><p>${esc(s.invoice_terms)}</p></div>` : ""}
+   <div class="foot">${esc(contact)}</div></div></div>`;
 }
 
 window.showInvoice = async (id) => {
@@ -379,6 +463,7 @@ window.showInvoice = async (id) => {
    <button class="b" onclick="printInvoice(${id})">Print / PDF</button>
    ${i.status === "draft" ? `<button class="b p" onclick="issueInv(${id})">Issue invoice</button>` : ""}</div>
    ${i.status === "issued" && i.paid_cents > 0 && i.balance_cents >= 0 ? `<div class="note" style="margin-top:0">This invoice has payments, so it can be edited but not deleted. To delete it, void its payments first.</div>` : ""}
+   ${i.quote_number ? `<div class="note" style="margin-top:0">Created from quotation <a href="#quotes" onclick="dlg.close();setTimeout(()=>showQuote(${i.quote_id}),150)">${esc(i.quote_number)}</a>.</div>` : ""}
    <div class="paper">${invoiceDoc(i)}</div>
    ${i.payments.length ? `<h4>Payments</h4><table>${i.payments.map(p => `<tr><td>${p.date}</td><td>${esc(p.reference)}</td><td>${esc(p.deposit_account_code)}</td><td class="n">${p.voided ? "<s>" + fmt(p.amount_cents) + "</s> void" : fmt(p.amount_cents)}</td>
      <td class="n">${p.voided ? "" : `<button class="b d" onclick="voidPayment(${p.id},${id})">Void</button>`}</td></tr>`).join("")}</table>` : ""}
@@ -398,11 +483,13 @@ window.voidPayment = (pid, id) => confirm("Void this payment?") && act(async () 
 window.payInv = id => act(async () => { const f = formData($("#payF"));
   await api(`/api/invoices/${id}/payments`, {date: f.date, amount_cents: toCents(f.amount), deposit_account_code: f.acct, reference: f.ref});
   await showInvoice(id); render(); }, "Payment recorded");
-window.printInvoice = async id => { const i = await api(`/api/invoices/${id}`); await loadLogo();
-  const w = window.open("", "_blank"); if (!w) return toast("Allow pop-ups for this site to print invoices", true);
-  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(REF.settings.company_name)} invoice ${esc(i.number || "draft")}</title>
-   <style>${INVDOC_CSS} body{margin:0;background:#fff} @page{size:auto;margin:10mm 0}</style></head><body>${invoiceDoc(i)}</body></html>`);
-  w.document.close(); w.focus(); setTimeout(() => w.print(), 300); };
+window.printInvoice = async id => { const i = await api(`/api/invoices/${id}`); printDoc(invoiceDoc(i), `invoice ${i.number || "draft"}`); };
+window.printQuote = async id => { const q = await api(`/api/quotes/${id}`); printDoc(quoteDoc(q), `quotation ${q.number}`); };
+async function printDoc(html, title) { await loadLogo();
+  const w = window.open("", "_blank"); if (!w) return toast("Allow pop-ups for this site to print", true);
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(REF.settings.company_name)} ${esc(title)}</title>
+   <style>${INVDOC_CSS}${QDOC_CSS} body{margin:0;background:#fff} @page{size:auto;margin:10mm 0}</style></head><body>${html}</body></html>`);
+  w.document.close(); w.focus(); setTimeout(() => w.print(), 300); }
 window.retainerDlg = () => openDlg("Generate monthly retainer invoices", `<p class="muted">Creates and issues one invoice per active client with a monthly retainer. Clients already invoiced for that month are skipped, so running it twice is safe.</p>
   <form class="grid" id="retF"><label>Month<input type="month" name="period" value="${today().slice(0, 7)}"></label><label>Invoice date <span class="muted">(blank = 1st)</span><input type="date" name="issue_date"></label>
   <button class="b p" type="button" onclick="genRet()">Generate</button></form>
@@ -416,6 +503,95 @@ window.rebillDlg = async cid => { const items = await api(`/api/unbilled-expense
   <button class="b p" type="button" onclick="doRebill(${cid})">Create draft invoice</button></form>`); };
 window.doRebill = cid => act(async () => { const f = formData($("#rbF")); const ids = [...document.querySelectorAll("#rbT input:checked")].map(c => +c.value);
   const r = await api("/api/rebill", {client_id: cid, issue_date: f.issue_date, markup_bp: pctToBp(f.markup), bill_ids: ids}); await render(); showInvoice(r.id); }, "Draft rebill invoice created");
+
+// ----- quotations -----
+const QSTATUS = {draft: "draft", sent: "sent", accepted: "accepted", declined: "declined", expired: "expired", invoiced: "invoiced", "part-invoiced": "part invoiced"};
+const qPill = st => `<span class="pill ${{accepted: "paid", invoiced: "paid", "part-invoiced": "partial", declined: "overdue", expired: "overdue", sent: "open", draft: "draft"}[st] || ""}">${QSTATUS[st] || st}</span>`;
+VIEWS.quotes = async () => {
+  const qs = await api("/api/quotes");
+  const open = qs.filter(q => ["draft", "sent"].includes(q.display_status)), won = qs.filter(q => ["accepted", "part-invoiced", "invoiced"].includes(q.display_status));
+  const decided = qs.filter(q => ["accepted", "part-invoiced", "invoiced", "declined"].includes(q.display_status)).length;
+  page("Quotations", `<button class="b p" onclick="quoteForm()">+ New quotation</button>`, `
+  <div class="kpis"><div class="kpi"><div class="l">Open quotations</div><div class="v">${fmt(open.reduce((t, q) => t + q.total_cents, 0))}</div><div class="s">${open.length} waiting for an answer</div></div>
+   <div class="kpi"><div class="l">Accepted</div><div class="v">${fmt(won.reduce((t, q) => t + q.total_cents, 0))}</div><div class="s">${won.length} quotation${won.length === 1 ? "" : "s"}</div></div>
+   <div class="kpi"><div class="l">Win rate</div><div class="v">${decided ? Math.round(100 * won.length / decided) + "%" : "—"}</div><div class="s">of quotations with an answer</div></div></div>
+  <div class="card"><div class="row noprint" style="margin-bottom:8px"><select id="qStatus" onchange="filterQ()"><option value="">All quotations</option>${Object.entries(QSTATUS).map(([k, v]) => opt(k, v[0].toUpperCase() + v.slice(1))).join("")}</select>
+   <input id="qText" placeholder="Search client / number" oninput="filterQ()"><button class="b right" onclick="tableCSV($('#qT'),'quotations')">Export CSV</button></div>
+  <div class="wrap"><table id="qT"><tr><th>Number</th><th>Client</th><th>Project</th><th>Date</th><th>Valid until</th><th>Status</th><th class="n">Total</th><th class="n">Invoiced</th></tr>
+  ${qs.map(q => `<tr class="click" data-s="${q.display_status}" data-t="${esc((q.client_name + " " + q.number).toLowerCase())}" onclick="showQuote(${q.id})">
+   <td>${esc(q.number)}</td><td>${esc(q.client_name)}</td><td>${esc(q.project_name || "")}</td><td>${q.issue_date}</td><td>${q.valid_until}</td><td>${qPill(q.display_status)}</td>
+   <td class="n">${fmt(q.total_cents)}</td><td class="n">${q.invoiced_bp ? q.invoiced_bp / 100 + "%" : ""}</td></tr>`).join("")}
+  <tr id="qEmpty" hidden><td colspan=8 class="muted">No quotations here. Click “+ New quotation” to write one.</td></tr></table></div></div>`);
+  filterQ();
+};
+window.filterQ = () => { const st = $("#qStatus").value, t = $("#qText").value.toLowerCase(); let n = 0;
+  document.querySelectorAll("#qT tr[data-s]").forEach(r => { const ok = (!st || r.dataset.s === st) && r.dataset.t.includes(t); r.style.display = ok ? "" : "none"; n += ok; });
+  $("#qEmpty").hidden = n > 0; };
+window.quoteForm = async (id) => {
+  const q = id ? await api(`/api/quotes/${id}`) : null; const s = REF.settings;
+  openDlg(q ? `Edit quotation ${q.number}` : "New quotation", `<form id="invF" class="grid" onsubmit="event.preventDefault()">
+   <label>Client<select name="client_id" onchange="this.form.project_id.innerHTML=projectOpts(this.value)">${clientOpts(q?.client_id, "— choose —")}</select></label>
+   <label>Project<select name="project_id">${projectOpts(q?.client_id, q?.project_id)}</select></label>
+   <label>Date<input type="date" name="issue_date" value="${q?.issue_date || today()}"></label>
+   <label>Valid until <span class="muted">(blank = ${esc(s.quote_valid_days)} days)</span><input type="date" name="valid_until" value="${q?.valid_until || ""}"></label>
+   <label>Tax rate %<input name="tax_pct" oninput="invCalc()" value="${((q ? q.tax_rate_bp : +s.default_tax_rate_bp) / 100).toString()}"></label>
+   <label>Discount<select name="discount_type" onchange="invCalc()">${opt("", "No discount", q?.discount_type || "")}${opt("percent", "Percent off (%)", q?.discount_type)}${opt("amount", "Fixed amount off", q?.discount_type)}</select></label>
+   <label>Discount value<input name="discount_value" oninput="invCalc()" placeholder="e.g. 10 or 250.00" value="${q?.discount_type === "percent" ? q.discount_value / 100 : q?.discount_type === "amount" ? dollars(q.discount_value) : ""}"></label>
+   <label style="grid-column:1/-1">Note to client <span class="muted">(scope, timeline, what's included)</span><textarea name="notes" rows="3">${esc(q?.notes || "")}</textarea></label></form>
+   <div class="wrap"><table class="lines" id="invL"><tr><th>Product or service</th><th>Description</th><th>Qty / hrs</th><th>Rate</th><th>Income account</th><th>Tax</th><th></th></tr>
+   ${(q?.lines || [{}]).map(lineRow).join("")}</table></div>
+   <div id="invSum" class="row muted" style="justify-content:flex-end;gap:18px;margin-top:8px;font-variant-numeric:tabular-nums"></div>
+   <div class="row" style="margin-top:10px"><button class="b" onclick="$('#invL').insertAdjacentHTML('beforeend', lineRow());invCalc()">+ Line</button>
+   <button class="b p right" onclick="saveQuote(${id || 0})">Save quotation</button></div>`);
+  invCalc();
+};
+window.saveQuote = id => act(async () => { const f = formData($("#invF"));
+  const lines = [...document.querySelectorAll("#invL tr")].slice(1).map(tr => ({
+    product: tr.querySelector("[name=product]").value, description: tr.querySelector("[name=description]").value, quantity: tr.querySelector("[name=quantity]").value || "1",
+    unit_price_cents: toCents(tr.querySelector("[name=unit_price]").value), revenue_account_code: tr.querySelector("[name=revenue_account_code]").value,
+    taxable: tr.querySelector("[name=taxable]").checked})).filter(l => l.product || l.description || l.unit_price_cents);
+  if (!f.client_id) throw new Error("Choose a client");
+  const body = {client_id: f.client_id, project_id: f.project_id || null, issue_date: f.issue_date, tax_rate_bp: pctToBp(f.tax_pct), notes: f.notes, lines, ...readDiscount(f)};
+  if (f.valid_until) body.valid_until = f.valid_until;
+  if (id) await api(`/api/quotes/${id}`, body); else id = (await api("/api/quotes", body)).id;
+  await render(); showQuote(id); }, "Quotation saved");
+window.showQuote = async id => {
+  const q = await api(`/api/quotes/${id}`); await loadLogo(); const st = q.display_status, locked = q.invoiced_bp > 0;
+  const statusBtn = (to, label) => `<button class="b" onclick="setQStatus(${id},'${to}')">${label}</button>`;
+  openDlg(`${q.number} · ${q.client_name}`, `<div class="row noprint" style="margin-bottom:12px">${qPill(st)}<span class="right"></span>
+   ${!locked ? `<button class="b" onclick="quoteForm(${id})">Edit</button>` : ""}
+   ${q.status === "draft" && !locked ? statusBtn("sent", "Mark sent") : ""}
+   ${["draft", "sent"].includes(q.status) && !locked ? statusBtn("accepted", "Mark accepted") + statusBtn("declined", "Mark declined") : ""}
+   ${q.status === "declined" ? statusBtn("sent", "Reopen") : ""}
+   <button class="b" onclick="dupQuote(${id})">Duplicate</button>
+   <button class="b" onclick="printQuote(${id})">Print / PDF</button>
+   ${!q.invoices.some(i => i.status !== "void") ? `<button class="b d" onclick="delQuote(${id})">Delete</button>` : ""}
+   ${q.invoiced_bp < 10000 && q.status !== "declined" ? `<button class="b p" onclick="convertDlg(${id})">${q.invoiced_bp ? "Invoice the rest" : "Convert to invoice"}</button>` : ""}</div>
+   ${q.invoices.length ? `<div class="note" style="margin-top:0">Invoiced so far: <b>${q.invoiced_bp / 100}%</b> ·
+     ${q.invoices.map(i => `<a href="#invoices" onclick="dlg.close();setTimeout(()=>showInvoice(${i.id}),150)">${esc(i.number || "Draft invoice")}</a> (${i.quote_pct_bp / 100}%${i.status === "void" ? ", void" : i.status === "draft" ? ", draft" : ""})`).join(" · ")}</div>` : ""}
+   ${st === "expired" ? `<div class="note" style="margin-top:0">This quotation passed its valid-until date. Edit it to extend the date, or duplicate it for a fresh quote.</div>` : ""}
+   <div class="paper">${quoteDoc(q)}</div>`);
+};
+window.setQStatus = (id, status) => act(async () => { await api(`/api/quotes/${id}/status`, {status}); await showQuote(id); render(); }, "Status updated");
+window.dupQuote = id => act(async () => { const r = await api(`/api/quotes/${id}/duplicate`, {}); await render(); showQuote(r.id); }, "Copy created as a new draft");
+window.delQuote = id => confirm("Delete this quotation? This can't be undone.") && act(async () => { await api(`/api/quotes/${id}/delete`, {}); dlg.close(); render(); }, "Quotation deleted");
+window.convertDlg = async id => { const q = await api(`/api/quotes/${id}`); const left = 10000 - q.invoiced_bp;
+  const choice = (v, label, sub, checked) => `<label class="chk" style="align-items:flex-start;padding:10px 12px;border:1px solid var(--line);border-radius:8px">
+    <input type="radio" name="pct" value="${v}" ${checked ? "checked" : ""} onchange="$('#cvCustom').hidden=this.value!=='custom'"><span><b>${label}</b><br><span class="muted">${sub}</span></span></label>`;
+  openDlg(`Invoice ${q.number}`, `<p class="muted" style="margin-top:0">Creates a <b>draft</b> invoice from this quotation. Check it, then issue it. Nothing reaches your books until you issue.</p>
+   <form id="cvF" onsubmit="event.preventDefault()" style="display:grid;gap:10px">
+   ${q.invoiced_bp === 0 ? choice(5000, "50% advance", `${fmt(Math.round(q.total_cents / 2))}: your standard advance to start work`, true) + choice(10000, "Full amount", fmt(q.total_cents), false)
+     : choice(left, `Remaining ${left / 100}%`, "the balance still to invoice", true)}
+   ${choice("custom", "Another percentage", "e.g. 30% for a milestone", false)}
+   <label id="cvCustom" hidden>Percentage to invoice<input name="custom" placeholder="e.g. 30" inputmode="decimal"></label>
+   <div class="grid"><label>Invoice date<input type="date" name="issue_date" value="${today()}"></label>
+   <label>Due date <span class="muted">(blank = client terms)</span><input type="date" name="due_date"></label></div></form>
+   <div class="row" style="margin-top:12px"><button class="b p right" onclick="doConvert(${id})">Create draft invoice</button></div>`); };
+window.doConvert = id => act(async () => { const f = formData($("#cvF"));
+  const bp = f.pct === "custom" ? toCents(f.custom) : +f.pct;
+  if (!(bp > 0)) throw new Error("Enter the percentage to invoice");
+  const r = await api(`/api/quotes/${id}/invoice`, {percent_bp: bp, issue_date: f.issue_date, due_date: f.due_date || null});
+  await render(); showInvoice(r.id); }, "Draft invoice created. Check it, then issue it.");
 
 // ----- expenses -----
 const GENERAL_PAYEE = "General expenses";
@@ -678,6 +854,9 @@ VIEWS.settings = async () => { const s = REF.settings; await loadLogo();
   <label>Default tax rate %<input name="tax_pct" value="${+s.default_tax_rate_bp / 100}"></label>
   <label>Invoice prefix<input name="invoice_prefix" value="${esc(s.invoice_prefix)}"></label>
   <label>Next invoice number<input name="next_invoice_number" type="number" min="1" value="${esc(s.next_invoice_number)}"></label>
+  <label>Quotation prefix<input name="quote_prefix" value="${esc(s.quote_prefix)}"></label>
+  <label>Next quotation number<input name="next_quote_number" type="number" min="1" value="${esc(s.next_quote_number)}"></label>
+  <label>Quotations valid for (days)<input name="quote_valid_days" type="number" min="0" max="365" value="${esc(s.quote_valid_days)}"></label>
   <label>Books locked through<input type="date" name="lock_date" value="${esc(s.lock_date)}"></label></form>
   <div class="note">The <b>lock date</b> closes a period: nothing can be posted, edited or voided on or before it. Set it after you file a return or your accountant signs off on a month.</div>
   <div class="row"><button class="b p right" onclick="saveSettings()">Save settings</button></div></div>`); };

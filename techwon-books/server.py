@@ -98,6 +98,27 @@ def _(c, q, b, iid): return L.get_invoice(c, iid)
 def _(c, q, b, iid):
     lines = b.pop("lines", None)
     return L.update_draft_invoice(c, iid, lines=lines, **b)
+@route("GET", "/api/quotes")
+def _(c, q, b): return L.list_quotes(c)
+@route("POST", "/api/quotes")
+def _(c, q, b):
+    lines = b.pop("lines", None)
+    return {"id": L.create_quote(c, b.pop("client_id", None), b.pop("issue_date", None), lines, **b)}
+@route("GET", r"/api/quotes/(\d+)")
+def _(c, q, b, qid): return L.get_quote(c, qid)
+@route("POST", r"/api/quotes/(\d+)")
+def _(c, q, b, qid):
+    lines = b.pop("lines", None)
+    return L.update_quote(c, qid, lines=lines, **b)
+@route("POST", r"/api/quotes/(\d+)/status")
+def _(c, q, b, qid): return L.set_quote_status(c, qid, b.get("status"))
+@route("POST", r"/api/quotes/(\d+)/delete")
+def _(c, q, b, qid): return L.delete_quote(c, qid)
+@route("POST", r"/api/quotes/(\d+)/duplicate")
+def _(c, q, b, qid): return {"id": L.duplicate_quote(c, qid, b.get("issue_date"))}
+@route("POST", r"/api/quotes/(\d+)/invoice")
+def _(c, q, b, qid):
+    return {"id": L.invoice_from_quote(c, qid, b.get("percent_bp", 10000), b.get("issue_date"), b.get("due_date"))}
 @route("POST", r"/api/invoices/(\d+)/revise")
 def _(c, q, b, iid):
     lines = b.pop("lines", None)
