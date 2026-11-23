@@ -104,8 +104,10 @@ let REF = {accounts: [], clients: [], projects: [], vendors: [], settings: {}};
 async function loadRef() {
   const [accounts, clients, projects, vendors, settings] = await Promise.all(
     ["/api/accounts", "/api/clients", "/api/projects", "/api/vendors", "/api/settings"].map(p => api(p)));
-  REF = {accounts, clients, projects, vendors, settings}; CUR = settings.currency || "USD";
-  $("#co").textContent = settings.company_name; document.title = settings.company_name + " · Books"; }
+  REF = {accounts, clients, projects, vendors, settings}; CUR = settings.currency || "USD"; await loadLogo();
+  if (LOGO) $("#co").innerHTML = `<img src="${esc(LOGO)}" alt="${esc(settings.company_name)}" style="display:block;max-width:170px;max-height:42px">`;
+  else $("#co").textContent = settings.company_name;
+  document.title = settings.company_name + " · Books"; }
 const acctOpts = (filter, sel) => REF.accounts.filter(a => a.is_active && filter(a)).map(a => opt(a.code, `${a.code} · ${a.name}`, sel)).join("");
 const clientOpts = (sel, blank = "— none —") => opt("", blank) + REF.clients.filter(c => c.is_active).map(c => opt(c.id, c.name, sel)).join("");
 const projectOpts = (clientId, sel) => opt("", "— none —") + REF.projects.filter(p => (!clientId || p.client_id == clientId) && p.status === "active")
@@ -191,19 +193,24 @@ VIEWS.dashboard = async () => {
 VIEWS.invoices = async () => {
   const inv = await api("/api/invoices"); const unb = await api("/api/unbilled-expenses");
   const byClient = {}; unb.forEach(b => (byClient[b.client_id] ??= {name: b.client_name, total: 0, n: 0}, byClient[b.client_id].total += b.amount_cents, byClient[b.client_id].n++));
+  const nVoid = inv.filter(i => i.display_status === "void").length;
   page("Invoices", `<button class="b" onclick="retainerDlg()">Generate retainers</button><button class="b p" onclick="invoiceForm()">+ New invoice</button>`, `
   ${Object.keys(byClient).length ? `<div class="card"><b>Unbilled billable expenses</b><table>${Object.entries(byClient).map(([id, c]) =>
     `<tr><td>${esc(c.name)}</td><td>${c.n} expense(s)</td><td class="n">${fmt(c.total)}</td><td class="n"><button class="b" onclick="rebillDlg(${id})">Rebill…</button></td></tr>`).join("")}</table></div>` : ""}
-  <div class="card"><div class="row noprint" style="margin-bottom:8px"><select id="fStatus" onchange="filterInv()"><option value="">All statuses</option>${["draft", "open", "partial", "overdue", "paid", "void"].map(s => opt(s, s)).join("")}</select>
+  <div class="card"><div class="row noprint" style="margin-bottom:8px"><select id="fStatus" onchange="filterInv()"><option value="">All invoices</option>${["draft", "open", "partial", "overdue", "paid"].map(s => opt(s, s[0].toUpperCase() + s.slice(1))).join("")}<option value="void">Deleted (void)${nVoid ? ` · ${nVoid}` : ""}</option></select>
    <input id="fText" placeholder="Search client / number" oninput="filterInv()"><button class="b right" onclick="tableCSV($('#invT'),'invoices')">Export CSV</button></div>
   <div class="wrap"><table id="invT"><tr><th>Number</th><th>Client</th><th>Project</th><th>Date</th><th>Due</th><th>Status</th><th class="n">Total</th><th class="n">Balance</th></tr>
   ${inv.map(i => `<tr class="click" data-s="${i.display_status}" data-t="${esc((i.client_name + " " + (i.number || "draft")).toLowerCase())}" onclick="showInvoice(${i.id})">
-   <td>${esc(i.number || "Draft")}</td><td>${esc(i.client_name)}</td><td>${esc(i.project_name || "")}</td><td>${i.issue_date}</td><td>${i.due_date}</td><td>${pill(i.display_status)}</td>
-   <td class="n">${fmt(i.total_cents)}</td><td class="n">${i.status === "issued" ? fmt(i.balance_cents) : ""}</td></tr>`).join("") || '<tr><td colspan=8 class="muted">No invoices yet.</td></tr>'}
-  </table></div></div>`);
+   <td>${esc(i.number || "Draft")}</td><td>${esc(i.client_name)}</td><td>${esc(i.project_name || "")}</td><td>${i.issue_date}</td><td>${i.due_date}</td><td>${pill(i.display_status === "void" ? "deleted" : i.display_status)}</td>
+   <td class="n">${fmt(i.total_cents)}</td><td class="n">${i.status === "issued" ? fmt(i.balance_cents) : ""}</td></tr>`).join("")}
+  <tr id="invEmpty" hidden><td colspan=8 class="muted">No invoices here.</td></tr></table></div></div>`);
+  filterInv();
 };
-window.filterInv = () => { const s = $("#fStatus").value, t = $("#fText").value.toLowerCase();
-  document.querySelectorAll("#invT tr[data-s]").forEach(r => r.style.display = (!s || r.dataset.s === s) && r.dataset.t.includes(t) ? "" : "none"); };
+// Deleted (void) invoices stay in the books but are hidden unless asked for.
+window.filterInv = () => { const s = $("#fStatus").value, t = $("#fText").value.toLowerCase(); let shown = 0;
+  document.querySelectorAll("#invT tr[data-s]").forEach(r => { const ok = (s ? r.dataset.s === s : r.dataset.s !== "void") && r.dataset.t.includes(t);
+    r.style.display = ok ? "" : "none"; shown += ok; });
+  $("#invEmpty").hidden = shown > 0; };
 
 const revOpts = sel => acctOpts(a => a.type === "income", sel);
 const lineRow = (l = {}) => `<tr><td><input name="description" value="${esc(l.description || "")}" placeholder="Description"></td>
@@ -213,21 +220,24 @@ const lineRow = (l = {}) => `<tr><td><input name="description" value="${esc(l.de
  <td style="width:50px;text-align:center"><input type="checkbox" name="taxable" onchange="invCalc()" ${l.taxable === 0 ? "" : "checked"}></td>
  <td style="width:30px"><button type="button" class="b d" onclick="this.closest('tr').remove();invCalc()">×</button></td></tr>`;
 window.invoiceForm = async (id) => {
-  const inv = id ? await api(`/api/invoices/${id}`) : null; const s = REF.settings;
-  openDlg(inv ? "Edit draft invoice" : "New invoice", `<form id="invF" class="grid">
-   <label>Client<select name="client_id" required onchange="this.form.project_id.innerHTML=projectOpts(this.value)">${clientOpts(inv?.client_id, "— choose —")}</select></label>
+  const inv = id ? await api(`/api/invoices/${id}`) : null; const s = REF.settings; const issued = inv?.status === "issued";
+  openDlg(!inv ? "New invoice" : issued ? `Edit invoice ${inv.number}` : "Edit draft invoice", `
+   ${issued ? `<div class="note" style="margin-top:0">Saving updates <b>${esc(inv.number)}</b> in your books under the same number; the journal keeps a record of the change. If the client already has this invoice, send them the updated copy.</div>` : ""}
+   <form id="invF" class="grid" onsubmit="event.preventDefault()">
+   <label>Client<select name="client_id" required ${issued ? "disabled" : ""} onchange="this.form.project_id.innerHTML=projectOpts(this.value)">${clientOpts(inv?.client_id, "— choose —")}</select></label>
    <label>Project<select name="project_id">${projectOpts(inv?.client_id, inv?.project_id)}</select></label>
    <label>Invoice date<input type="date" name="issue_date" value="${inv?.issue_date || today()}" required></label>
    <label>Due date <span class="muted">(blank = client terms)</span><input type="date" name="due_date" value="${inv?.due_date || ""}"></label>
    <label>Tax rate %<input name="tax_pct" oninput="invCalc()" value="${((inv ? inv.tax_rate_bp : +s.default_tax_rate_bp) / 100).toString()}"></label>
    <label>Discount<select name="discount_type" onchange="invCalc()">${opt("", "No discount", inv?.discount_type || "")}${opt("percent", "Percent off (%)", inv?.discount_type)}${opt("amount", "Fixed amount off", inv?.discount_type)}</select></label>
    <label>Discount value<input name="discount_value" oninput="invCalc()" placeholder="e.g. 10 or 250.00" value="${inv?.discount_type === "percent" ? inv.discount_value / 100 : inv?.discount_type === "amount" ? dollars(inv.discount_value) : ""}"></label>
-   <label style="grid-column:1/-1">Notes / payment instructions<textarea name="notes" rows="2">${esc(inv?.notes || "")}</textarea></label></form>
+   <label style="grid-column:1/-1">Note to client <span class="muted">(shown on the invoice; payment details come from Settings)</span><textarea name="notes" rows="2">${esc(inv?.notes || "")}</textarea></label></form>
    <div class="wrap"><table class="lines" id="invL"><tr><th>Description</th><th>Qty / hrs</th><th>Rate</th><th>Income account</th><th>Tax</th><th></th></tr>
    ${(inv?.lines || [{}]).map(lineRow).join("")}</table></div>
    <div id="invSum" class="row muted" style="justify-content:flex-end;gap:18px;margin-top:8px;font-variant-numeric:tabular-nums"></div>
    <div class="row" style="margin-top:10px"><button class="b" onclick="$('#invL').insertAdjacentHTML('beforeend', lineRow());invCalc()">+ Line</button>
-   <button class="b right" onclick="saveInvoice(${id || 0}, false)">Save draft</button><button class="b p" onclick="saveInvoice(${id || 0}, true)">Save &amp; issue</button></div>`);
+   ${issued ? `<button class="b p right" onclick="saveInvoice(${id}, false)">Save changes</button>` :
+     `<button class="b right" onclick="saveInvoice(${id || 0}, false)">Save draft</button><button class="b p" onclick="saveInvoice(${id || 0}, true)">Save &amp; issue</button>`}</div>`);
   invCalc();
 };
 function readDiscount(f) { // -> {discount_type, discount_value} in API units (basis points or cents)
@@ -254,51 +264,123 @@ window.saveInvoice = async (id, issue) => act(async () => {
     unit_price_cents: toCents(tr.querySelector("[name=unit_price]").value), revenue_account_code: tr.querySelector("[name=revenue_account_code]").value,
     taxable: tr.querySelector("[name=taxable]").checked})).filter(l => l.description || l.unit_price_cents);
   const body = {issue_date: f.issue_date, due_date: f.due_date || null, project_id: f.project_id || null, tax_rate_bp: pctToBp(f.tax_pct), notes: f.notes, lines, ...readDiscount(f)};
-  if (id) { if (!f.due_date) delete body.due_date; await api(`/api/invoices/${id}`, body); }
+  const existing = id ? await api(`/api/invoices/${id}`) : null;
+  if (existing?.status === "issued") {
+    if (!f.due_date) delete body.due_date;
+    await api(`/api/invoices/${id}/revise`, body); toast(`${existing.number} updated`);
+    await render(); return showInvoice(id); }
+  if (id) { if (!f.due_date) delete body.due_date; await api(`/api/invoices/${id}`, {...body, client_id: f.client_id}); }
   else { if (!f.client_id) throw new Error("Choose a client"); id = (await api("/api/invoices", {...body, client_id: f.client_id})).id; }
   if (issue) { const r = await api(`/api/invoices/${id}/issue`, {}); toast(`Issued ${r.number}`); } else toast("Draft saved");
-  dlg.close(); render(); });
+  await render(); showInvoice(id); });
+
+// ----- invoice document (screen, print and PDF share this) -----
+const INVDOC_CSS = `
+.invdoc{--brand:#1a73d1;--ink:#16202b;--muted:#5f6b7a;--rule:#e3e8ef;--tint:#f2f7fd;background:#fff;color:var(--ink);color-scheme:light;
+ font:13.5px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;max-width:820px;margin:0 auto;
+ padding:0 48px 36px;font-variant-numeric:tabular-nums;overflow:hidden}
+.invdoc *{box-sizing:border-box}
+.invdoc td,.invdoc th{border:0;padding:0;white-space:normal;vertical-align:top}
+.invdoc .accent{height:8px;margin:0 -48px 34px;background:linear-gradient(90deg,var(--brand),color-mix(in srgb,var(--brand) 55%,#5fd0ff))}
+.invdoc .top{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;flex-wrap:wrap}
+.invdoc .logo img{max-height:58px;max-width:250px;display:block}
+.invdoc .wordmark{font-size:26px;font-weight:800;letter-spacing:.14em;color:var(--brand)}
+.invdoc .co{font-weight:600;margin-top:12px}
+.invdoc .small{color:var(--muted);font-size:12.5px;white-space:pre-line}
+.invdoc .title{text-align:right}
+.invdoc .title h1{margin:0;font-size:30px;letter-spacing:.2em;font-weight:300;color:var(--ink)}
+.invdoc .meta{margin:8px 0 0 auto;border-collapse:collapse}
+.invdoc .meta td{padding:2px 0 2px 18px;text-align:right;font-size:12.5px}
+.invdoc .meta td:first-child{color:var(--muted)}
+.invdoc .stamp{display:inline-block;margin-top:12px;transform:rotate(-5deg);border:2.5px solid currentColor;border-radius:6px;padding:2px 12px;
+ font-size:15px;font-weight:800;letter-spacing:.2em}
+.invdoc .stamp.paid{color:#16794a}.invdoc .stamp.void,.invdoc .stamp.overdue{color:#c0262d}.invdoc .stamp.draft{color:#9a6700}
+.invdoc .parties{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin:30px 0 26px}
+.invdoc .label{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:600;margin-bottom:6px}
+.invdoc .billto b{font-size:15px}
+.invdoc .due{background:var(--tint);border-left:4px solid var(--brand);padding:14px 18px;border-radius:6px}
+.invdoc .due .amt{font-size:28px;font-weight:700;line-height:1.2}
+.invdoc table.items{width:100%;border-collapse:collapse}
+.invdoc .items th{font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);text-align:left;padding:10px 8px;border-bottom:2px solid var(--ink)}
+.invdoc .items td{padding:11px 8px;border-bottom:1px solid var(--rule);vertical-align:top}
+.invdoc .n,.invdoc .items th.n{text-align:right;white-space:nowrap}
+.invdoc .sum{display:flex;justify-content:flex-end;margin-top:14px}
+.invdoc .sum table{border-collapse:collapse;min-width:min(300px,100%)}
+.invdoc .sum td{padding:6px 10px}
+.invdoc .sum .grand td{border-top:2px solid var(--ink);font-weight:700;font-size:15px;padding-top:10px}
+.invdoc .sum .bal td{background:var(--brand);color:#fff;font-weight:700;font-size:15px}
+.invdoc .foot{margin-top:32px;display:grid;grid-template-columns:1fr 1fr;gap:24px}
+.invdoc .thanks{margin-top:32px;padding-top:14px;border-top:1px solid var(--rule);text-align:center;color:var(--muted);font-size:12px}
+@media (max-width:640px){.invdoc{padding:0 18px 24px}.invdoc .accent{margin:0 -18px 24px}.invdoc .parties,.invdoc .foot{grid-template-columns:1fr}
+ .invdoc .title{text-align:left}.invdoc .meta{margin-left:0}.invdoc .meta td{text-align:left;padding:2px 18px 2px 0}}
+@media print{.invdoc{max-width:none;padding:0 0 24px}.invdoc .accent{margin:0 0 28px}.invdoc .sum .bal td,.invdoc .due,.invdoc .accent{-webkit-print-color-adjust:exact;print-color-adjust:exact}}`;
+document.head.insertAdjacentHTML("beforeend", `<style>${INVDOC_CSS}
+.paper{border:1px solid var(--line);border-radius:10px;overflow:hidden;box-shadow:0 1px 2px #0000000f,0 8px 24px #00000014}</style>`);
+const niceDate = d => d ? new Date(d + "T00:00:00").toLocaleDateString(undefined, {year: "numeric", month: "short", day: "numeric"}) : "";
+const brandColor = () => /^#[0-9a-f]{6}$/i.test(REF.settings.brand_color || "") ? REF.settings.brand_color : "#1a73d1";
+function invoiceDoc(i) {
+  const s = REF.settings;
+  const from = [s.company_address, s.company_email, s.company_phone, s.company_website, s.company_tax_id ? "Tax ID: " + s.company_tax_id : ""].filter(Boolean).join("\n");
+  const stamp = {paid: "PAID", void: "VOID", draft: "DRAFT", overdue: "OVERDUE"}[i.display_status];
+  const due = i.status === "void" ? 0 : i.status === "draft" ? i.total_cents : i.balance_cents;
+  const dueLabel = i.status === "void" ? "Cancelled" : due === 0 ? "Paid in full" : "Amount due";
+  const dueNote = i.status === "void" ? "This invoice has been cancelled." : due === 0 ? "Thank you for your payment." : `Due by ${niceDate(i.due_date)}`;
+  return `<div class="invdoc" style="--brand:${brandColor()}"><div class="accent"></div>
+  <div class="top"><div><div class="logo">${LOGO ? `<img src="${esc(LOGO)}" alt="${esc(s.company_name)}">` : `<div class="wordmark">${esc(s.company_name.toUpperCase())}</div>`}</div>
+    ${LOGO ? `<div class="co">${esc(s.company_name)}</div>` : ""}<div class="small" style="margin-top:${LOGO ? 2 : 10}px">${esc(from)}</div></div>
+   <div class="title"><h1>INVOICE</h1><table class="meta"><tr><td>Invoice no.</td><td><b>${esc(i.number || "Draft")}</b></td></tr>
+    <tr><td>Issue date</td><td>${niceDate(i.issue_date)}</td></tr><tr><td>Due date</td><td>${niceDate(i.due_date)}</td></tr>
+    ${i.project_name ? `<tr><td>Project</td><td>${esc(i.project_name)}</td></tr>` : ""}</table>${stamp ? `<div class="stamp ${i.display_status}">${stamp}</div>` : ""}</div></div>
+  <div class="parties"><div class="billto"><div class="label">Bill to</div><b>${esc(i.client_name)}</b><div class="small" style="margin-top:4px">${esc([i.client_address, i.client_email].filter(Boolean).join("\n"))}</div></div>
+   <div class="due"><div class="label">${dueLabel}</div><div class="amt">${fmt(due)}</div><div class="small">${dueNote}</div></div></div>
+  <table class="items"><tr><th>Description</th><th class="n">Qty</th><th class="n">Rate</th><th class="n">Amount</th></tr>
+   ${i.lines.map(l => `<tr><td>${esc(l.description)}</td><td class="n">${esc(l.quantity)}</td><td class="n">${fmt(l.unit_price_cents)}</td><td class="n">${fmt(l.amount_cents)}</td></tr>`).join("")}</table>
+  <div class="sum"><table><tr><td>Subtotal</td><td class="n">${fmt(i.subtotal_cents)}</td></tr>
+   ${i.discount_cents ? `<tr><td>Discount${i.discount_type === "percent" ? ` (${i.discount_value / 100}%)` : ""}</td><td class="n">−${fmt(i.discount_cents)}</td></tr>` : ""}
+   ${i.tax_rate_bp ? `<tr><td>Tax (${i.tax_rate_bp / 100}%)</td><td class="n">${fmt(i.tax_cents)}</td></tr>` : ""}
+   <tr class="grand"><td>Total</td><td class="n">${fmt(i.total_cents)}</td></tr>
+   ${i.paid_cents ? `<tr><td>Paid</td><td class="n">−${fmt(i.paid_cents)}</td></tr>` : ""}
+   ${i.status !== "void" ? `<tr class="bal"><td>Balance due</td><td class="n">${fmt(due)}</td></tr>` : ""}</table></div>
+  ${s.payment_instructions || i.notes ? `<div class="foot"><div>${s.payment_instructions ? `<div class="label">How to pay</div><div class="small" style="color:var(--ink)">${esc(s.payment_instructions)}</div>` : ""}</div>
+   <div>${i.notes ? `<div class="label">Notes</div><div class="small" style="color:var(--ink)">${esc(i.notes)}</div>` : ""}</div></div>` : ""}
+  ${s.invoice_footer ? `<div class="thanks">${esc(s.invoice_footer)}</div>` : ""}</div>`;
+}
 
 window.showInvoice = async (id) => {
-  const i = await api(`/api/invoices/${id}`);
+  const i = await api(`/api/invoices/${id}`); await loadLogo();
   const bankOpts = acctOpts(a => a.subtype === "cash");
-  openDlg(`${i.number || "Draft invoice"} — ${i.client_name}`, `<div class="row" style="margin-bottom:10px">${pill(i.display_status)}
-   <span class="muted">Issued ${i.issue_date} · Due ${i.due_date}${i.project_name ? " · " + esc(i.project_name) : ""}</span>
+  const canDelete = i.status === "draft" || (i.status === "issued" && i.paid_cents === 0);
+  openDlg(`${i.number || "Draft invoice"} · ${i.client_name}`, `<div class="row noprint" style="margin-bottom:12px">${pill(i.display_status === "void" ? "deleted" : i.display_status)}
    <span class="right"></span>
-   ${i.status === "draft" ? `<button class="b" onclick="invoiceForm(${id})">Edit</button><button class="b d" onclick="delInvoice(${id})">Delete</button><button class="b p" onclick="issueInv(${id})">Issue</button>` : ""}
-   ${i.status !== "draft" ? `<button class="b" onclick="printInvoice(${id})">Print / PDF</button>` : ""}
-   ${i.status === "issued" && i.paid_cents === 0 ? `<button class="b d" onclick="voidInv(${id})">Void</button>` : ""}</div>
-   <table><tr><th>Description</th><th class="n">Qty</th><th class="n">Rate</th><th>Account</th><th class="n">Amount</th></tr>
-   ${i.lines.map(l => `<tr><td>${esc(l.description)}${l.taxable ? "" : ' <span class="muted">(no tax)</span>'}</td><td class="n">${esc(l.quantity)}</td><td class="n">${fmt(l.unit_price_cents)}</td><td>${esc(l.revenue_account_code)}</td><td class="n">${fmt(l.amount_cents)}</td></tr>`).join("")}
-   <tr><td colspan=4 class="n">Subtotal</td><td class="n">${fmt(i.subtotal_cents)}</td></tr>
-   ${i.discount_cents ? `<tr><td colspan=4 class="n">Discount${i.discount_type === "percent" ? ` (${i.discount_value / 100}%)` : ""}</td><td class="n neg">−${fmt(i.discount_cents)}</td></tr>` : ""}
-   <tr><td colspan=4 class="n">Tax (${i.tax_rate_bp / 100}%)</td><td class="n">${fmt(i.tax_cents)}</td></tr>
-   <tr class="total"><td colspan=4 class="n">Total</td><td class="n">${fmt(i.total_cents)}</td></tr>
-   <tr><td colspan=4 class="n">Paid</td><td class="n">${fmt(i.paid_cents)}</td></tr>
-   <tr class="sub"><td colspan=4 class="n">Balance due</td><td class="n">${fmt(i.status === "issued" ? i.balance_cents : 0)}</td></tr></table>
+   ${i.status !== "void" ? `<button class="b" onclick="invoiceForm(${id})">Edit</button>` : ""}
+   ${canDelete ? `<button class="b d" onclick="deleteInvoice(${id})">Delete</button>` : ""}
+   <button class="b" onclick="printInvoice(${id})">Print / PDF</button>
+   ${i.status === "draft" ? `<button class="b p" onclick="issueInv(${id})">Issue invoice</button>` : ""}</div>
+   ${i.status === "issued" && i.paid_cents > 0 && i.balance_cents >= 0 ? `<div class="note" style="margin-top:0">This invoice has payments, so it can be edited but not deleted. To delete it, void its payments first.</div>` : ""}
+   <div class="paper">${invoiceDoc(i)}</div>
    ${i.payments.length ? `<h4>Payments</h4><table>${i.payments.map(p => `<tr><td>${p.date}</td><td>${esc(p.reference)}</td><td>${esc(p.deposit_account_code)}</td><td class="n">${p.voided ? "<s>" + fmt(p.amount_cents) + "</s> void" : fmt(p.amount_cents)}</td>
      <td class="n">${p.voided ? "" : `<button class="b d" onclick="voidPayment(${p.id},${id})">Void</button>`}</td></tr>`).join("")}</table>` : ""}
-   ${i.status === "issued" && i.balance_cents > 0 ? `<h4>Receive payment</h4><form class="grid" id="payF">
+   ${i.status === "issued" && i.balance_cents > 0 ? `<h4>Receive payment</h4><form class="grid" id="payF" onsubmit="event.preventDefault()">
      <label>Date<input type="date" name="date" value="${today()}"></label><label>Amount<input name="amount" value="${dollars(i.balance_cents)}"></label>
      <label>Deposit to<select name="acct">${bankOpts}</select></label><label>Reference<input name="ref" placeholder="ACH / check #"></label>
      <button class="b p" type="button" onclick="payInv(${id})">Record payment</button></form>` : ""}`);
 };
 window.issueInv = id => act(async () => { const r = await api(`/api/invoices/${id}/issue`, {}); toast(`Issued ${r.number}`); await showInvoice(id); render(); });
-window.delInvoice = id => confirm("Delete this draft?") && act(async () => { await api(`/api/invoices/${id}/delete`, {}); dlg.close(); render(); }, "Draft deleted");
-window.voidInv = id => confirm("Void this invoice? A reversing entry will be posted.") && act(async () => { await api(`/api/invoices/${id}/void`, {}); await showInvoice(id); render(); }, "Invoice voided");
+window.deleteInvoice = async id => { const i = await api(`/api/invoices/${id}`);
+  if (i.status === "draft") {
+    if (confirm("Delete this draft invoice? This can't be undone.")) act(async () => { await api(`/api/invoices/${id}/delete`, {}); dlg.close(); render(); }, "Draft deleted");
+    return; }
+  if (confirm(`Delete invoice ${i.number}?\n\nIt will disappear from your invoice list and its amount comes out of your revenue and receivables. Because it was issued, the books keep it marked VOID (find it under "Deleted"). The number ${i.number} won't be reused.`))
+    act(async () => { await api(`/api/invoices/${id}/void`, {}); dlg.close(); render(); }, `Invoice ${i.number} deleted`); };
 window.voidPayment = (pid, id) => confirm("Void this payment?") && act(async () => { await api(`/api/payments/${pid}/void`, {}); await showInvoice(id); render(); }, "Payment voided");
 window.payInv = id => act(async () => { const f = formData($("#payF"));
   await api(`/api/invoices/${id}/payments`, {date: f.date, amount_cents: toCents(f.amount), deposit_account_code: f.acct, reference: f.ref});
   await showInvoice(id); render(); }, "Payment recorded");
-window.printInvoice = async id => { const i = await api(`/api/invoices/${id}`); const s = REF.settings; const w = window.open("", "_blank");
-  w.document.write(`<!doctype html><title>${esc(i.number)}</title><style>body{font:14px system-ui;margin:40px;color:#111}table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px solid #ddd;text-align:left}.n{text-align:right}h1{margin:0}.t td{font-weight:700;border-top:2px solid #111}</style>
-  <div style="display:flex;justify-content:space-between"><div><h1>${esc(s.company_name)}</h1></div><div style="text-align:right"><h2 style="margin:0">INVOICE ${esc(i.number)}</h2>Date: ${i.issue_date}<br>Due: ${i.due_date}</div></div>
-  <p><b>Bill to</b><br>${esc(i.client_name)}<br>${esc(i.client_address).replace(/\n/g, "<br>")}<br>${esc(i.client_email)}</p>${i.project_name ? `<p>Project: ${esc(i.project_name)}</p>` : ""}
-  <table><tr><th>Description</th><th class="n">Qty</th><th class="n">Rate</th><th class="n">Amount</th></tr>${i.lines.map(l => `<tr><td>${esc(l.description)}</td><td class="n">${esc(l.quantity)}</td><td class="n">${fmt(l.unit_price_cents)}</td><td class="n">${fmt(l.amount_cents)}</td></tr>`).join("")}
-  <tr><td colspan=3 class="n">Subtotal</td><td class="n">${fmt(i.subtotal_cents)}</td></tr>${i.discount_cents ? `<tr><td colspan=3 class="n">Discount${i.discount_type === "percent" ? ` (${i.discount_value / 100}%)` : ""}</td><td class="n">−${fmt(i.discount_cents)}</td></tr>` : ""}${i.tax_cents ? `<tr><td colspan=3 class="n">Tax ${i.tax_rate_bp / 100}%</td><td class="n">${fmt(i.tax_cents)}</td></tr>` : ""}
-  <tr class="t"><td colspan=3 class="n">Total</td><td class="n">${fmt(i.total_cents)}</td></tr>${i.paid_cents ? `<tr><td colspan=3 class="n">Paid</td><td class="n">${fmt(i.paid_cents)}</td></tr><tr class="t"><td colspan=3 class="n">Balance due</td><td class="n">${fmt(i.balance_cents)}</td></tr>` : ""}</table>
-  ${i.notes ? `<p style="margin-top:24px;white-space:pre-wrap">${esc(i.notes)}</p>` : ""}${i.status === "void" ? '<h2 style="color:#c00">VOID</h2>' : ""}`);
-  w.document.close(); w.focus(); w.print(); };
+window.printInvoice = async id => { const i = await api(`/api/invoices/${id}`); await loadLogo();
+  const w = window.open("", "_blank"); if (!w) return toast("Allow pop-ups for this site to print invoices", true);
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(REF.settings.company_name)} invoice ${esc(i.number || "draft")}</title>
+   <style>${INVDOC_CSS} body{margin:0;background:#fff} @page{size:auto;margin:14mm}</style></head><body>${invoiceDoc(i)}</body></html>`);
+  w.document.close(); w.focus(); setTimeout(() => w.print(), 300); };
 window.retainerDlg = () => openDlg("Generate monthly retainer invoices", `<p class="muted">Creates and issues one invoice per active client with a monthly retainer. Clients already invoiced for that month are skipped, so running it twice is safe.</p>
   <form class="grid" id="retF"><label>Month<input type="month" name="period" value="${today().slice(0, 7)}"></label><label>Invoice date <span class="muted">(blank = 1st)</span><input type="date" name="issue_date"></label>
   <button class="b p" type="button" onclick="genRet()">Generate</button></form>
@@ -515,8 +597,25 @@ window.runReport = r => act(async () => { const f = formData($("#rF")); const q 
 });
 
 // ----- settings -----
-VIEWS.settings = async () => { const s = REF.settings;
-  page("Settings", "", `<div class="card"><form class="grid" id="sF">
+VIEWS.settings = async () => { const s = REF.settings; await loadLogo();
+  page("Settings", "", `<div class="card"><h3 style="margin-top:0">Invoice branding</h3>
+  <div class="row" style="align-items:center;gap:16px;margin-bottom:14px">
+   <div style="background:#fff;border:1px solid var(--line);border-radius:8px;padding:12px 16px;min-width:220px;min-height:70px;display:flex;align-items:center">
+    ${LOGO ? `<img src="${esc(LOGO)}" alt="Logo" style="max-height:54px;max-width:240px">` : `<span class="muted">No logo yet: invoices show your company name.</span>`}</div>
+   <label class="b" style="flex-direction:row;cursor:pointer">Upload logo<input type="file" id="logoFile" accept="image/png,image/jpeg,image/webp,image/svg+xml" hidden onchange="uploadLogo(this.files[0])"></label>
+   ${LOGO ? `<button class="b d" onclick="act(async()=>{await api('/api/logo',{logo:''});LOGO=null;render()},'Logo removed')">Remove</button>` : ""}
+   <span class="muted" style="font-size:12px">PNG with a transparent background works best. Empty margins are trimmed automatically.</span></div>
+  <form class="grid" id="bF" onsubmit="event.preventDefault()">
+  <label style="grid-column:span 2">Company address<textarea name="company_address" rows="3">${esc(s.company_address)}</textarea></label>
+  <label>Billing email<input name="company_email" value="${esc(s.company_email)}"></label>
+  <label>Phone<input name="company_phone" value="${esc(s.company_phone)}"></label>
+  <label>Website<input name="company_website" value="${esc(s.company_website)}"></label>
+  <label>Tax / VAT / GST number<input name="company_tax_id" value="${esc(s.company_tax_id)}"></label>
+  <label>Brand colour<input type="color" name="brand_color" value="${esc(brandColor())}" style="height:34px;padding:2px"></label>
+  <label style="grid-column:span 2">How to pay (bank details, payment link)<textarea name="payment_instructions" rows="3" placeholder="Bank: …&#10;Account: …&#10;Reference: invoice number">${esc(s.payment_instructions)}</textarea></label>
+  <label style="grid-column:span 2">Footer line<input name="invoice_footer" value="${esc(s.invoice_footer)}"></label></form>
+  <div class="row"><button class="b p right" onclick="act(async()=>{await api('/api/settings',formData($('#bF')));render()},'Invoice branding saved')">Save branding</button></div></div>
+  <div class="card"><h3 style="margin-top:0">Books</h3><form class="grid" id="sF" onsubmit="event.preventDefault()">
   <label>Company name<input name="company_name" value="${esc(s.company_name)}"></label>
   <label>Currency (ISO code)<input name="currency" value="${esc(s.currency)}" maxlength="3"></label>
   <label>Fiscal year starts (month 1–12)<input name="fiscal_year_start_month" type="number" min="1" max="12" value="${esc(s.fiscal_year_start_month)}"></label>
@@ -527,6 +626,34 @@ VIEWS.settings = async () => { const s = REF.settings;
   <div class="note">The <b>lock date</b> closes a period: nothing can be posted, edited or voided on or before it. Set it after you file a return or your accountant signs off on a month.</div>
   <div class="row"><button class="b p right" onclick="saveSettings()">Save settings</button></div></div>`); };
 window.saveSettings = () => act(async () => { const f = formData($("#sF")); f.default_tax_rate_bp = pctToBp(f.tax_pct); delete f.tax_pct; f.currency = f.currency.toUpperCase();
+  try { new Intl.NumberFormat(undefined, {style: "currency", currency: f.currency}); } catch { throw new Error("Unknown currency code"); }
+  await api("/api/settings", f); render(); }, "Settings saved");
+
+// ----- logo -----
+let LOGO = null;
+async function loadLogo(force) { if (LOGO === null || force) { try { LOGO = (await api("/api/logo")).logo || ""; } catch { LOGO = ""; } } return LOGO; }
+// Crop away empty (transparent or white) margins so a square logo file doesn't render tiny.
+function trimLogo(dataUrl) { return new Promise(resolve => { const img = new Image();
+  img.onload = () => { try {
+    const c = document.createElement("canvas"), W = img.naturalWidth, H = img.naturalHeight; c.width = W; c.height = H;
+    const x = c.getContext("2d"); x.drawImage(img, 0, 0); const d = x.getImageData(0, 0, W, H).data;
+    let t = H, l = W, r = -1, b = -1;
+    for (let y = 0; y < H; y++) for (let xx = 0; xx < W; xx++) { const k = (y * W + xx) * 4;
+      if (d[k + 3] > 16 && !(d[k] > 245 && d[k + 1] > 245 && d[k + 2] > 245)) { if (y < t) t = y; if (y > b) b = y; if (xx < l) l = xx; if (xx > r) r = xx; } }
+    if (r < 0) return resolve(dataUrl);
+    const pad = 4; l = Math.max(0, l - pad); t = Math.max(0, t - pad); r = Math.min(W - 1, r + pad); b = Math.min(H - 1, b + pad);
+    const scale = Math.min(1, 1200 / (r - l + 1)), o = document.createElement("canvas");
+    o.width = Math.round((r - l + 1) * scale); o.height = Math.round((b - t + 1) * scale);
+    o.getContext("2d").drawImage(c, l, t, r - l + 1, b - t + 1, 0, 0, o.width, o.height);
+    resolve(o.toDataURL("image/png")); } catch { resolve(dataUrl); } };
+  img.onerror = () => resolve(dataUrl); img.src = dataUrl; }); }
+window.uploadLogo = file => file && act(async () => {
+  if (file.size > 2_000_000) throw new Error("That image is over 2 MB. Use a smaller PNG or SVG.");
+  let data = await new Promise((ok, bad) => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.onerror = bad; fr.readAsDataURL(file); });
+  if (!data.startsWith("data:image/svg")) data = await trimLogo(data);
+  await api("/api/logo", {logo: data}); LOGO = data; render(); }, "Logo uploaded");
+
+(async () => { const f = formData($("#sF")); f.default_tax_rate_bp = pctToBp(f.tax_pct); delete f.tax_pct; f.currency = f.currency.toUpperCase();
   try { new Intl.NumberFormat(undefined, {style: "currency", currency: f.currency}); } catch { throw new Error("Unknown currency code"); }
   await api("/api/settings", f); render(); }, "Settings saved");
 

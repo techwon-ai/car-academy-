@@ -205,6 +205,86 @@ class DiscountTests(Base):
         self.tb_ok()
 
 
+class InvoiceEditTests(Base):
+    def issued(self, price=10000, **kw):
+        inv = L.create_invoice(self.c, self.acme, "2026-02-01", [{"description": "Work", "unit_price_cents": price}], **kw)
+        return inv, L.issue_invoice(self.c, inv)
+
+    def test_revise_issued_invoice_keeps_number_and_rebooks(self):
+        inv, number = self.issued()
+        L.revise_invoice(self.c, inv, lines=[{"description": "Work (corrected)", "unit_price_cents": 12500}],
+                         discount_type="amount", discount_value=500)
+        d = L.get_invoice(self.c, inv)
+        self.assertEqual((d["number"], d["status"], d["total_cents"]), (number, "issued", 12000))
+        self.assertEqual(L.dashboard(self.c, "2026-02-28")["ar_cents"], 12000)
+        pl = L.profit_and_loss(self.c, "2026-02-01", "2026-02-28")
+        self.assertEqual(pl["net_revenue_cents"], 12000)
+        memos = [e["memo"] for e in L.list_journal(self.c)]
+        self.assertIn(f"Invoice {number} revised: original reversed", memos)
+        self.assertIn(f"Invoice {number} (revised)", memos)
+        L.revise_invoice(self.c, inv, notes="second edit")  # can be revised again
+        L.void_invoice(self.c, inv, "2026-03-01")
+        self.assertEqual(L.dashboard(self.c, "2026-03-31")["ar_cents"], 0)
+        self.tb_ok()
+
+    def test_revise_cannot_go_below_payments(self):
+        inv, _ = self.issued()
+        L.record_payment(self.c, inv, "2026-02-05", 8000)
+        with self.assertRaisesRegex(LedgerError, "already paid"):
+            L.revise_invoice(self.c, inv, lines=[{"description": "x", "unit_price_cents": 5000}])
+        self.assertEqual(L.get_invoice(self.c, inv)["total_cents"], 10000)  # rolled back
+        L.revise_invoice(self.c, inv, lines=[{"description": "x", "unit_price_cents": 9000}])
+        self.assertEqual(L.get_invoice(self.c, inv)["balance_cents"], 1000)
+        with self.assertRaisesRegex(LedgerError, "after a payment"):
+            L.revise_invoice(self.c, inv, issue_date="2026-02-20", due_date="2026-03-20")
+        self.tb_ok()
+
+    def test_revise_respects_lock_and_client(self):
+        inv, _ = self.issued()
+        other = L.create_client(self.c, "Other Co")
+        with self.assertRaisesRegex(LedgerError, "another client"):
+            L.revise_invoice(self.c, inv, client_id=other)
+        L.update_settings(self.c, {"lock_date": "2026-02-28"})
+        with self.assertRaisesRegex(LedgerError, "locked"):
+            L.revise_invoice(self.c, inv, notes="too late")
+        with self.assertRaises(LedgerError):
+            L.revise_invoice(self.c, L.create_invoice(self.c, self.acme, "2026-03-05",
+                             [{"description": "d", "unit_price_cents": 1}]), notes="draft")
+
+    def test_draft_can_change_client_and_drops_old_project(self):
+        proj = L.create_project(self.c, self.acme, "P")
+        inv = L.create_invoice(self.c, self.acme, "2026-02-01", [{"description": "x", "unit_price_cents": 100}],
+                               project_id=proj)
+        other = L.create_client(self.c, "Other Co")
+        L.update_draft_invoice(self.c, inv, client_id=other)
+        d = L.get_invoice(self.c, inv)
+        self.assertEqual((d["client_id"], d["project_id"]), (other, None))
+
+
+class BrandingTests(Base):
+    PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+
+    def test_logo_roundtrip_and_kept_out_of_settings(self):
+        self.assertEqual(L.get_logo(self.c), "")
+        L.set_logo(self.c, self.PNG)
+        self.assertEqual(L.get_logo(self.c), self.PNG)
+        self.assertNotIn("logo", L.get_settings(self.c))
+        L.set_logo(self.c, "")
+        self.assertEqual(L.get_logo(self.c), "")
+
+    def test_logo_validation(self):
+        for bad in ("data:text/html;base64,PGgxPg==", "javascript:alert(1)",
+                    "data:image/png;base64,abc<script>", "data:image/png;base64," + "A" * L.MAX_LOGO_CHARS):
+            with self.assertRaises(LedgerError):
+                L.set_logo(self.c, bad)
+
+    def test_company_settings(self):
+        L.update_settings(self.c, {"company_address": "1 Main St", "brand_color": "#123abc"})
+        self.assertEqual(L.get_settings(self.c)["brand_color"], "#123abc")
+        with self.assertRaises(LedgerError):
+            L.update_settings(self.c, {"brand_color": "red; background:url(x)"})
+
+
 class RetainerTests(Base):
     def test_generate_is_idempotent(self):
         L.create_client(self.c, "No Retainer Co")

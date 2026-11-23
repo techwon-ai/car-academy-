@@ -98,6 +98,16 @@ def _(c, q, b, iid): return L.get_invoice(c, iid)
 def _(c, q, b, iid):
     lines = b.pop("lines", None)
     return L.update_draft_invoice(c, iid, lines=lines, **b)
+@route("POST", r"/api/invoices/(\d+)/revise")
+def _(c, q, b, iid):
+    lines = b.pop("lines", None)
+    return L.revise_invoice(c, iid, lines=lines, **b)
+@route("GET", "/api/logo")
+def _(c, q, b): return {"logo": L.get_logo(c)}
+@route("POST", "/api/logo")
+def _(c, q, b):
+    _admin(c)
+    return L.set_logo(c, b.get("logo", ""))
 @route("POST", r"/api/invoices/(\d+)/issue")
 def _(c, q, b, iid): return {"number": L.issue_invoice(c, iid)}
 @route("POST", r"/api/invoices/(\d+)/void")

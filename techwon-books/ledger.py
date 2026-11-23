@@ -11,6 +11,7 @@ periods.
 
 import contextlib
 import datetime as dt
+import re
 
 import db
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
@@ -93,7 +94,18 @@ DEFAULT_SETTINGS = {
     "invoice_prefix": "TW-",
     "next_invoice_number": "1001",
     "default_tax_rate_bp": "0",
+    # shown on invoices
+    "company_address": "",
+    "company_email": "",
+    "company_phone": "",
+    "company_website": "",
+    "company_tax_id": "",
+    "payment_instructions": "",
+    "invoice_footer": "Thank you for your business.",
+    "brand_color": "#1a73d1",
 }
+LOGO_KEY = "logo"  # stored in settings, but served separately because it can be large
+MAX_LOGO_CHARS = 700_000  # roughly a 500 KB image
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -315,7 +327,27 @@ def init_db(conn):
 
 
 def get_settings(conn):
-    return {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM settings")}
+    return {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM settings WHERE key != ?",
+                                                       (LOGO_KEY,))}
+
+
+def get_logo(conn):
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (LOGO_KEY,)).fetchone()
+    return row[0] if row else ""
+
+
+def set_logo(conn, data_uri):
+    """data_uri: a base64 PNG/JPEG/WebP/SVG data: URI, or '' to remove the logo."""
+    data_uri = str(data_uri or "")
+    if data_uri:
+        if len(data_uri) > MAX_LOGO_CHARS:
+            raise LedgerError("Logo file is too large; use an image under 500 KB")
+        if not re.fullmatch(r"data:image/(png|jpeg|webp|svg\+xml);base64,[A-Za-z0-9+/]+={0,2}", data_uri):
+            raise LedgerError("Logo must be a PNG, JPG, WebP or SVG image")
+    with tx(conn):
+        conn.execute("DELETE FROM settings WHERE key = ?", (LOGO_KEY,))
+        if data_uri:
+            conn.execute("INSERT INTO settings(key, value) VALUES (?, ?)", (LOGO_KEY, data_uri))
 
 
 def update_settings(conn, values):
@@ -333,6 +365,11 @@ def update_settings(conn, values):
     if "next_invoice_number" in values:
         if _int(values["next_invoice_number"], "next_invoice_number") < 1:
             raise LedgerError("next_invoice_number must be positive")
+    if "brand_color" in values and not re.fullmatch(r"#[0-9a-fA-F]{6}", str(values["brand_color"])):
+        raise LedgerError("brand_color must look like #1d4ed8")
+    for k in ("company_address", "payment_instructions", "invoice_footer"):
+        if k in values and len(str(values[k])) > 2000:
+            raise LedgerError(f"{k} is too long")
     if "default_tax_rate_bp" in values:
         if _int(values["default_tax_rate_bp"], "default_tax_rate_bp") < 0:
             raise LedgerError("default_tax_rate_bp cannot be negative")
@@ -799,39 +836,89 @@ def list_invoices(conn, client_id=None, status=None):
     return rows
 
 
-def update_draft_invoice(conn, invoice_id, lines=None, **fields):
-    allowed = {"issue_date", "due_date", "tax_rate_bp", "notes", "project_id", "discount_type", "discount_value"}
-    bad = set(fields) - allowed
+INVOICE_FIELDS = {"client_id", "issue_date", "due_date", "tax_rate_bp", "notes", "project_id",
+                  "discount_type", "discount_value"}
+
+
+def _apply_invoice_changes(conn, inv, lines, fields):
+    """Validate and apply edits to an invoice's header and lines (caller holds the transaction)."""
+    bad = set(fields) - INVOICE_FIELDS
     if bad:
         raise LedgerError(f"Unknown invoice field(s): {', '.join(sorted(bad))}")
+    has_rebilled = conn.execute("SELECT 1 FROM invoice_lines WHERE invoice_id = ? AND bill_id IS NOT NULL",
+                                (inv["id"],)).fetchone()
+    if "client_id" in fields:
+        new_client = _client(conn, fields["client_id"])
+        if new_client["id"] == inv["client_id"]:
+            del fields["client_id"]
+        elif inv["status"] != "draft":
+            raise LedgerError("An issued invoice can't move to another client; void it and create a new one")
+        elif has_rebilled:
+            raise LedgerError("This invoice rebills one client's expenses, so its client can't change")
+        elif not new_client["is_active"]:
+            raise LedgerError("Client is inactive")
+        else:
+            fields["client_id"] = new_client["id"]
+    client_id = fields.get("client_id", inv["client_id"])
+    for k in ("issue_date", "due_date"):
+        if k in fields:
+            fields[k] = _date(fields[k], k)
+    if "tax_rate_bp" in fields:
+        fields["tax_rate_bp"] = _int(fields["tax_rate_bp"], "tax_rate_bp")
+        if fields["tax_rate_bp"] < 0:
+            raise LedgerError("tax_rate_bp cannot be negative")
+    if fields.get("project_id"):
+        fields["project_id"] = _project(conn, fields["project_id"], client_id)["id"]
+    elif "project_id" in fields:
+        fields["project_id"] = None
+    elif "client_id" in fields and inv["project_id"]:
+        fields["project_id"] = None  # the old project belonged to the old client
+    if "discount_type" in fields or "discount_value" in fields:
+        fields["discount_type"], fields["discount_value"] = _discount(
+            fields.get("discount_type", inv["discount_type"]), fields.get("discount_value", inv["discount_value"]))
+    for k, v in fields.items():
+        conn.execute(f"UPDATE invoices SET {k} = ? WHERE id = ?", (v, inv["id"]))
+    cur = conn.execute("SELECT * FROM invoices WHERE id = ?", (inv["id"],)).fetchone()
+    if cur["due_date"] < cur["issue_date"]:
+        raise LedgerError("due_date cannot be before issue_date")
+    if lines is not None:
+        if any(l.get("bill_id") for l in lines) or has_rebilled:
+            raise LedgerError("Rebilled-expense invoices can't have lines edited; delete or void it and rebill again")
+        conn.execute("DELETE FROM invoice_lines WHERE invoice_id = ?", (inv["id"],))
+        _insert_invoice_lines(conn, inv["id"], lines)
+    return _check_invoice_totals(conn, inv["id"])
+
+
+def update_draft_invoice(conn, invoice_id, lines=None, **fields):
     with tx(conn):
         inv = _one(conn, "SELECT * FROM invoices WHERE id = ?", (_int(invoice_id, "invoice_id"),), "Invoice")
         if inv["status"] != "draft":
-            raise LedgerError("Only draft invoices can be edited; void and re-issue instead")
-        for k in ("issue_date", "due_date"):
-            if k in fields:
-                fields[k] = _date(fields[k], k)
-        if "tax_rate_bp" in fields:
-            fields["tax_rate_bp"] = _int(fields["tax_rate_bp"], "tax_rate_bp")
-            if fields["tax_rate_bp"] < 0:
-                raise LedgerError("tax_rate_bp cannot be negative")
-        if fields.get("project_id"):
-            fields["project_id"] = _project(conn, fields["project_id"], inv["client_id"])["id"]
-        if "discount_type" in fields or "discount_value" in fields:
-            fields["discount_type"], fields["discount_value"] = _discount(
-                fields.get("discount_type", inv["discount_type"]), fields.get("discount_value", inv["discount_value"]))
-        for k, v in fields.items():
-            conn.execute(f"UPDATE invoices SET {k} = ? WHERE id = ?", (v or None if k == "project_id" else v, inv["id"]))
-        inv = conn.execute("SELECT * FROM invoices WHERE id = ?", (inv["id"],)).fetchone()
-        if inv["due_date"] < inv["issue_date"]:
-            raise LedgerError("due_date cannot be before issue_date")
-        if lines is not None:
-            if any(l.get("bill_id") for l in lines) or conn.execute(
-                    "SELECT 1 FROM invoice_lines WHERE invoice_id = ? AND bill_id IS NOT NULL", (inv["id"],)).fetchone():
-                raise LedgerError("Rebilled-expense invoices can't have lines edited; delete the draft and rebill again")
-            conn.execute("DELETE FROM invoice_lines WHERE invoice_id = ?", (inv["id"],))
-            _insert_invoice_lines(conn, inv["id"], lines)
-        _check_invoice_totals(conn, inv["id"])
+            raise LedgerError("This invoice has been issued; use revise instead")
+        _apply_invoice_changes(conn, inv, lines, fields)
+
+
+def revise_invoice(conn, invoice_id, lines=None, **fields):
+    """Edit an issued invoice, keeping its number. The original posting is reversed
+    on its own date and the corrected invoice is posted, so the journal shows both."""
+    with tx(conn):
+        inv = _one(conn, "SELECT * FROM invoices WHERE id = ?", (_int(invoice_id, "invoice_id"),), "Invoice")
+        if inv["status"] == "draft":
+            raise LedgerError("Drafts are edited directly, not revised")
+        if inv["status"] != "issued":
+            raise LedgerError("A void invoice can't be edited")
+        _reverse(conn, inv["entry_id"], inv["issue_date"], f"Invoice {inv['number']} revised: original reversed")
+        totals = _apply_invoice_changes(conn, inv, lines, fields)
+        if totals["total_cents"] < totals["paid_cents"]:
+            raise LedgerError(f"The new total ({totals['total_cents']} cents) is less than the "
+                              f"{totals['paid_cents']} cents already paid. Void a payment first.")
+        cur = conn.execute("SELECT * FROM invoices WHERE id = ?", (inv["id"],)).fetchone()
+        paid_before = conn.execute("SELECT MIN(date) FROM payments WHERE invoice_id = ? AND voided = 0",
+                                   (inv["id"],)).fetchone()[0]
+        if paid_before and cur["issue_date"] > paid_before:
+            raise LedgerError("The invoice date can't move after a payment already received on it")
+        eid = _post(conn, cur["issue_date"], f"Invoice {inv['number']} (revised)",
+                    _invoice_entry_lines(conn, cur, totals, inv["number"]), "invoice", inv["id"])
+        conn.execute("UPDATE invoices SET entry_id = ? WHERE id = ?", (eid, inv["id"]))
 
 
 def delete_draft_invoice(conn, invoice_id):
@@ -844,15 +931,35 @@ def delete_draft_invoice(conn, invoice_id):
         conn.execute("DELETE FROM invoices WHERE id = ?", (inv["id"],))
 
 
+def _invoice_entry_lines(conn, inv, totals, number):
+    """Journal lines for an invoice: Dr A/R; Cr revenue; Dr discounts; Cr sales tax."""
+    cid, pid = inv["client_id"], inv["project_id"]
+    lines = [{"account_code": AR, "debit_cents": totals["total_cents"], "client_id": cid,
+              "project_id": pid, "memo": f"Invoice {number}"}]
+    for l in conn.execute("SELECT * FROM invoice_lines WHERE invoice_id = ? AND amount_cents != 0", (inv["id"],)):
+        amt = l["amount_cents"]
+        lines.append({"account_id": l["revenue_account_id"], "client_id": cid, "project_id": pid,
+                      "memo": l["description"],
+                      **({"credit_cents": amt} if amt > 0 else {"debit_cents": -amt})})
+    if totals["discount_cents"]:
+        disc = account_by_code(conn, DISCOUNTS)
+        if disc["type"] != "income":
+            raise LedgerError(f"Account {DISCOUNTS} must be an income account to record discounts")
+        lines.append({"account_id": disc["id"], "debit_cents": totals["discount_cents"], "client_id": cid,
+                      "project_id": pid, "memo": f"Discount on {number}"})
+    if totals["tax_cents"]:
+        lines.append({"account_code": SALES_TAX, "credit_cents": totals["tax_cents"],
+                      "client_id": cid, "memo": f"Tax on {number}"})
+    return lines
+
+
 def issue_invoice(conn, invoice_id):
     """Assign the next invoice number and post: Dr A/R, Cr revenue (+ Cr sales tax)."""
     with tx(conn):
         inv = _one(conn, "SELECT * FROM invoices WHERE id = ?", (_int(invoice_id, "invoice_id"),), "Invoice")
         if inv["status"] != "draft":
             raise LedgerError(f"Invoice is already {inv['status']}")
-        totals = _invoice_totals(conn, inv["id"])
-        if totals["total_cents"] <= 0:
-            raise LedgerError("Invoice total must be greater than zero")
+        totals = _check_invoice_totals(conn, inv["id"])
         s = get_settings(conn)
         n = int(s["next_invoice_number"])
         number = f"{s['invoice_prefix']}{n}"
@@ -860,25 +967,8 @@ def issue_invoice(conn, invoice_id):
             n += 1
             number = f"{s['invoice_prefix']}{n}"
         conn.execute("UPDATE settings SET value = ? WHERE key = 'next_invoice_number'", (str(n + 1),))
-
-        cid, pid = inv["client_id"], inv["project_id"]
-        lines = [{"account_code": AR, "debit_cents": totals["total_cents"], "client_id": cid,
-                  "project_id": pid, "memo": f"Invoice {number}"}]
-        for l in conn.execute("SELECT * FROM invoice_lines WHERE invoice_id = ? AND amount_cents != 0", (inv["id"],)):
-            amt = l["amount_cents"]
-            lines.append({"account_id": l["revenue_account_id"], "client_id": cid, "project_id": pid,
-                          "memo": l["description"],
-                          **({"credit_cents": amt} if amt > 0 else {"debit_cents": -amt})})
-        if totals["discount_cents"]:
-            disc = account_by_code(conn, DISCOUNTS)
-            if disc["type"] != "income":
-                raise LedgerError(f"Account {DISCOUNTS} must be an income account to record discounts")
-            lines.append({"account_id": disc["id"], "debit_cents": totals["discount_cents"], "client_id": cid,
-                          "project_id": pid, "memo": f"Discount on {number}"})
-        if totals["tax_cents"]:
-            lines.append({"account_code": SALES_TAX, "credit_cents": totals["tax_cents"],
-                          "client_id": cid, "memo": f"Tax on {number}"})
-        eid = _post(conn, inv["issue_date"], f"Invoice {number}", lines, "invoice", inv["id"])
+        eid = _post(conn, inv["issue_date"], f"Invoice {number}", _invoice_entry_lines(conn, inv, totals, number),
+                    "invoice", inv["id"])
         conn.execute("UPDATE invoices SET status = 'issued', number = ?, entry_id = ? WHERE id = ?",
                      (number, eid, inv["id"]))
         return number
