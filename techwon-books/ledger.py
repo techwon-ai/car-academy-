@@ -89,6 +89,30 @@ DEFAULT_ACCOUNTS = [
     ("7000", "Interest Expense", "expense", "other_expense", 0),
 ]
 
+CONTRACT_CLAUSES = (
+    "1. Services. The Agency will provide the services described in the Scope of Work. Work outside that scope "
+    "needs a written change request and may be charged separately.\n"
+    "2. Fees and payment. The Client will pay the fees in this agreement according to the payment terms. The Agency "
+    "may pause work while any invoice is overdue.\n"
+    "3. Client responsibilities. The Client will provide content, approvals, access and feedback on time. Delays in "
+    "the Client's input may move deadlines.\n"
+    "4. Revisions. Two rounds of revisions per deliverable are included unless stated otherwise. Further revisions "
+    "are billed at the Agency's standard rates.\n"
+    "5. Intellectual property. Ownership of the final deliverables passes to the Client on full payment. The Agency "
+    "keeps its pre-existing tools, templates and know-how, and may show the work in its portfolio unless the Client "
+    "objects in writing.\n"
+    "6. Third-party costs. Advertising spend, stock media, software licences and similar costs are paid by the "
+    "Client, directly or by reimbursing the Agency.\n"
+    "7. Confidentiality. Each party will keep the other's confidential information private, during this agreement "
+    "and after it ends.\n"
+    "8. No guaranteed results. The Agency will work with reasonable skill and care but does not guarantee specific "
+    "outcomes such as rankings, sales or advertising performance.\n"
+    "9. Liability. Each party's total liability under this agreement is limited to the fees paid in the three months "
+    "before the claim, except for unpaid fees or a breach of confidentiality.\n"
+    "10. Term and termination. Either party may end this agreement with 30 days' written notice. The Client will pay "
+    "for work done up to the end date. Advances are non-refundable once work has started.\n"
+    "11. Governing law. This agreement is governed by the laws of Pakistan, and the courts of Karachi have "
+    "jurisdiction.")
 SHORT_TERMS = (
     "1. 50% advance is required to start work; the balance is due on delivery.\n"
     "2. The price covers the agreed scope only; extra work is billed separately.\n"
@@ -106,6 +130,10 @@ DEFAULT_SETTINGS = {
     "quote_prefix": "Q-",
     "next_quote_number": "1001",
     "quote_valid_days": "15",
+    "contract_prefix": "C-",
+    "next_contract_number": "1001",
+    "contract_payment_terms": "50% advance on signing; balance on delivery. Invoices are due on receipt.",
+    "contract_clauses": CONTRACT_CLAUSES,
     "next_invoice_number": "1001",
     "default_tax_rate_bp": "0",
     # shown on invoices
@@ -243,6 +271,27 @@ CREATE TABLE IF NOT EXISTS quote_lines (
   amount_cents INTEGER NOT NULL,
   revenue_account_id INTEGER NOT NULL REFERENCES accounts(id),
   taxable INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS contracts (
+  id INTEGER PRIMARY KEY,
+  number TEXT NOT NULL UNIQUE,
+  client_id INTEGER NOT NULL REFERENCES clients(id),
+  project_id INTEGER REFERENCES projects(id),
+  quote_id INTEGER REFERENCES quotes(id),
+  title TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'project' CHECK (kind IN ('project','retainer')),
+  start_date TEXT NOT NULL,
+  end_date TEXT,
+  value_cents INTEGER NOT NULL DEFAULT 0 CHECK (value_cents >= 0),
+  monthly_fee_cents INTEGER NOT NULL DEFAULT 0 CHECK (monthly_fee_cents >= 0),
+  payment_terms TEXT NOT NULL DEFAULT '',
+  scope TEXT NOT NULL DEFAULT '',
+  clauses TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','sent','signed','cancelled')),
+  signed_date TEXT,
+  signed_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS invoices (
@@ -428,6 +477,11 @@ def update_settings(conn, values):
             raise LedgerError(f"{k} is too long")
     if "next_quote_number" in values and _int(values["next_quote_number"], "next_quote_number") < 1:
         raise LedgerError("next_quote_number must be positive")
+    if "next_contract_number" in values and _int(values["next_contract_number"], "next_contract_number") < 1:
+        raise LedgerError("next_contract_number must be positive")
+    for k in ("contract_clauses", "contract_payment_terms"):
+        if k in values and len(str(values[k])) > 30000:
+            raise LedgerError(f"{k} is too long")
     if "quote_valid_days" in values and not 0 <= _int(values["quote_valid_days"], "quote_valid_days") <= 365:
         raise LedgerError("quote_valid_days must be between 0 and 365")
     if "default_tax_rate_bp" in values:
@@ -1352,6 +1406,168 @@ def list_quotes(conn):
         t = _quote_totals(conn, q["id"])
         d.update(t)
         d["display_status"] = _quote_status(q, t)
+        rows.append(d)
+    return rows
+
+
+# --------------------------------------------------------------------------
+# Contracts (documents only; they never touch the books)
+# --------------------------------------------------------------------------
+
+CONTRACT_FIELDS = {"client_id", "project_id", "quote_id", "title", "kind", "start_date", "end_date", "value_cents",
+                   "monthly_fee_cents", "payment_terms", "scope", "clauses"}
+
+
+def _contract(conn, contract_id):
+    return _one(conn, "SELECT * FROM contracts WHERE id = ?", (_int(contract_id, "contract_id"),), "Contract")
+
+
+def _contract_status(c, today=None):
+    today = today or _today()
+    if c["status"] == "signed":
+        if c["end_date"] and c["end_date"] < today:
+            return "ended"
+        if c["start_date"] > today:
+            return "signed"  # signed, starts later
+        return "active"
+    return c["status"]
+
+
+def _contract_values(conn, fields, current=None):
+    bad = set(fields) - CONTRACT_FIELDS
+    if bad:
+        raise LedgerError(f"Unknown contract field(s): {', '.join(sorted(bad))}")
+    v = dict(current) if current else {}
+    v.update({k: x for k, x in fields.items()})
+    out = {}
+    c = _client(conn, v.get("client_id"))
+    if not current or "client_id" in fields:
+        if not c["is_active"]:
+            raise LedgerError("Client is inactive")
+    out["client_id"] = c["id"]
+    out["project_id"] = _project(conn, v["project_id"], c["id"])["id"] if v.get("project_id") else None
+    out["quote_id"] = _quote(conn, v["quote_id"])["id"] if v.get("quote_id") else None
+    out["title"] = " ".join(str(v.get("title") or "").split())[:200]
+    if not out["title"]:
+        raise LedgerError("Give the contract a title, e.g. 'Website development agreement'")
+    out["kind"] = v.get("kind") or "project"
+    if out["kind"] not in ("project", "retainer"):
+        raise LedgerError("kind must be 'project' or 'retainer'")
+    out["start_date"] = _date(v.get("start_date"), "start_date")
+    out["end_date"] = _date(v["end_date"], "end_date") if v.get("end_date") else None
+    if out["end_date"] and out["end_date"] < out["start_date"]:
+        raise LedgerError("The end date can't be before the start date")
+    out["value_cents"] = _cents(v.get("value_cents") or 0, "value_cents", allow_zero=True)
+    out["monthly_fee_cents"] = _cents(v.get("monthly_fee_cents") or 0, "monthly_fee_cents", allow_zero=True)
+    if out["kind"] == "retainer" and not out["monthly_fee_cents"]:
+        raise LedgerError("Enter the monthly fee for a retainer contract")
+    if out["kind"] == "project" and not out["value_cents"]:
+        raise LedgerError("Enter the contract value for a project contract")
+    for k in ("payment_terms", "scope", "clauses"):
+        out[k] = str(v.get(k) or "")
+        if len(out[k]) > 30000:
+            raise LedgerError(f"{k} is too long")
+    return out
+
+
+def create_contract(conn, **fields):
+    with tx(conn):
+        s = get_settings(conn)
+        fields.setdefault("payment_terms", s["contract_payment_terms"])
+        fields.setdefault("clauses", s["contract_clauses"])
+        v = _contract_values(conn, fields)
+        n = int(s["next_contract_number"])
+        while conn.execute("SELECT 1 FROM contracts WHERE number = ?", (f"{s['contract_prefix']}{n}",)).fetchone():
+            n += 1
+        conn.execute("UPDATE settings SET value = ? WHERE key = 'next_contract_number'", (str(n + 1),))
+        v["number"] = f"{s['contract_prefix']}{n}"
+        cols = list(v)
+        return conn.execute(f"INSERT INTO contracts({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                            [v[c] for c in cols]).lastrowid
+
+
+def update_contract(conn, contract_id, **fields):
+    with tx(conn):
+        c = _contract(conn, contract_id)
+        if c["status"] in ("signed", "cancelled"):
+            raise LedgerError(f"A {c['status']} contract can't change. Duplicate it to make a new version.")
+        v = _contract_values(conn, fields, c)
+        for k, x in v.items():
+            conn.execute(f"UPDATE contracts SET {k} = ? WHERE id = ?", (x, c["id"]))
+
+
+def sign_contract(conn, contract_id, signed_date, signed_by, update_retainer=False):
+    """Record the client's signature. For a retainer, optionally make its monthly fee the
+    client's retainer so the monthly 'Generate retainers' run bills it."""
+    with tx(conn):
+        c = _contract(conn, contract_id)
+        if c["status"] not in ("draft", "sent"):
+            raise LedgerError(f"This contract is already {c['status']}")
+        signed_by = " ".join(str(signed_by or "").split())[:120]
+        if not signed_by:
+            raise LedgerError("Enter the name of the person who signed for the client")
+        conn.execute("UPDATE contracts SET status = 'signed', signed_date = ?, signed_by = ? WHERE id = ?",
+                     (_date(signed_date, "signed_date"), signed_by, c["id"]))
+        if update_retainer and c["kind"] == "retainer":
+            conn.execute("UPDATE clients SET retainer_cents = ? WHERE id = ?", (c["monthly_fee_cents"], c["client_id"]))
+
+
+def set_contract_status(conn, contract_id, status):
+    if status not in ("draft", "sent", "cancelled"):
+        raise LedgerError("Use sign to mark a contract signed; status must be draft, sent or cancelled")
+    with tx(conn):
+        c = _contract(conn, contract_id)
+        if c["status"] == "signed" and status != "cancelled":
+            raise LedgerError("A signed contract can only be cancelled")
+        conn.execute("UPDATE contracts SET status = ? WHERE id = ?", (status, c["id"]))
+
+
+def delete_contract(conn, contract_id):
+    with tx(conn):
+        c = _contract(conn, contract_id)
+        if c["status"] == "signed":
+            raise LedgerError("Signed contracts are kept for your records; cancel it instead")
+        conn.execute("DELETE FROM contracts WHERE id = ?", (c["id"],))
+
+
+def duplicate_contract(conn, contract_id):
+    with tx(conn):
+        c = _contract(conn, contract_id)
+        return create_contract(conn, **{k: c[k] for k in CONTRACT_FIELDS if k != "quote_id"})
+
+
+def contract_from_quote(conn, quote_id):
+    """Draft a project contract from a quotation: same client, project, value and scope."""
+    with tx(conn):
+        q = get_quote(conn, quote_id)
+        scope = "\n".join(
+            "- " + " - ".join(x for x in (l["product"], l["description"]) if x)
+            + (f" (x{l['quantity']})" if l["quantity"] not in ("1", "1.0") else "") for l in q["lines"])
+        if q["notes"]:
+            scope += "\n\n" + q["notes"]
+        first = next((l["product"] or l["description"] for l in q["lines"]), "Services")
+        return create_contract(conn, client_id=q["client_id"], project_id=q["project_id"], quote_id=q["id"],
+                               title=f"{first} agreement", kind="project", start_date=_today(),
+                               value_cents=q["total_cents"], scope=scope)
+
+
+def get_contract(conn, contract_id):
+    c = _one(conn, "SELECT k.*, c.name AS client_name, c.email AS client_email, c.address AS client_address,"
+                   " p.name AS project_name, q.number AS quote_number FROM contracts k JOIN clients c ON c.id = k.client_id"
+                   " LEFT JOIN projects p ON p.id = k.project_id LEFT JOIN quotes q ON q.id = k.quote_id WHERE k.id = ?",
+             (_int(contract_id, "contract_id"),), "Contract")
+    d = dict(c)
+    d["display_status"] = _contract_status(c)
+    return d
+
+
+def list_contracts(conn):
+    rows = []
+    for c in conn.execute("SELECT k.*, c.name AS client_name FROM contracts k JOIN clients c ON c.id = k.client_id"
+                          " ORDER BY k.start_date DESC, k.id DESC").fetchall():
+        d = dict(c)
+        d["display_status"] = _contract_status(c)
+        d.pop("clauses", None)
         rows.append(d)
     return rows
 

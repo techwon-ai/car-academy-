@@ -117,7 +117,7 @@ const projectOpts = (clientId, sel) => opt("", "— none —") + REF.projects.fi
   .map(p => opt(p.id, clientId ? p.name : `${p.client_name} · ${p.name}`, sel)).join("");
 
 // ---------- routing ----------
-const PAGES = {dashboard: "Dashboard", quotes: "Quotations", invoices: "Invoices", expenses: "Expenses", clients: "Clients & Projects",
+const PAGES = {dashboard: "Dashboard", quotes: "Quotations", contracts: "Contracts", invoices: "Invoices", expenses: "Expenses", clients: "Clients & Projects",
   banking: "Bank Reconciliation", journal: "Journal Entries", accounts: "Chart of Accounts",
   reports: "Reports", settings: "Settings", users: "Users"};
 let SESSION = {login_required: false, user: null};
@@ -405,12 +405,12 @@ const QDOC_CSS = `
 .qdoc .lower{display:grid;grid-template-columns:1fr minmax(260px,310px);gap:36px;margin-top:22px;align-items:start}
 .qdoc .notes .l{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;font-weight:600}
 .qdoc .notes p{margin:0;white-space:pre-line}
-.qdoc .card{background:var(--tint);border-radius:10px;overflow:hidden}
-.qdoc .card table{width:100%;border-collapse:collapse}
-.qdoc .card td{padding:9px 16px;font-size:12.5px}
-.qdoc .card td:first-child{color:var(--muted)}
-.qdoc .card .tot td{background:var(--brand);color:#fff;font-weight:700;font-size:15px;padding:13px 16px}
-.qdoc .card .tot td.n{font-size:18px}
+.qdoc .qcard{background:var(--tint);border-radius:10px;overflow:hidden}
+.qdoc .qcard table{width:100%;border-collapse:collapse}
+.qdoc .qcard td{padding:9px 16px;font-size:12.5px}
+.qdoc .qcard td:first-child{color:var(--muted)}
+.qdoc .qcard .tot td{background:var(--brand);color:#fff;font-weight:700;font-size:15px;padding:13px 16px}
+.qdoc .qcard .tot td.n{font-size:18px}
 .qdoc .accept{margin-top:34px;border:1.5px dashed #b7c6d8;border-radius:12px;padding:20px 22px}
 .qdoc .accept .h{font-weight:700;font-size:14px}
 .qdoc .accept .s{color:var(--muted);font-size:12.5px;margin-top:2px}
@@ -422,7 +422,7 @@ const QDOC_CSS = `
 .qdoc .foot{margin-top:30px;padding-top:14px;padding-bottom:30px;border-top:1px solid var(--rule);color:var(--muted);font-size:11.5px;text-align:center}
 @media (max-width:640px){.qdoc .pad{padding-left:20px;padding-right:20px}.qdoc .facts{grid-template-columns:1fr 1fr}.qdoc .title{text-align:left}
  .qdoc .lower{grid-template-columns:1fr;gap:18px}.qdoc .items{min-width:420px}.qdoc .sig{grid-template-columns:1fr;gap:26px}}
-@media print{.qdoc{max-width:none}.qdoc .pad{padding-left:14mm;padding-right:14mm}.qdoc .hero,.qdoc .items th,.qdoc .card,.qdoc .card .tot td{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+@media print{.qdoc{max-width:none}.qdoc .pad{padding-left:14mm;padding-right:14mm}.qdoc .hero,.qdoc .items th,.qdoc .qcard,.qdoc .qcard .tot td{-webkit-print-color-adjust:exact;print-color-adjust:exact}
  .qdoc .items tr,.qdoc .lower,.qdoc .accept,.qdoc .terms{break-inside:avoid}}`;
 document.head.insertAdjacentHTML("beforeend", `<style>${QDOC_CSS}</style>`);
 function quoteDoc(q) {
@@ -442,7 +442,7 @@ function quoteDoc(q) {
     ${q.lines.map((l, k) => `<tr><td class="num">${String(k + 1).padStart(2, "0")}</td><td class="item"><b>${esc(l.product || l.description)}</b>${l.product && l.description ? `<span>${esc(l.description)}</span>` : ""}</td>
      <td class="n">${esc(l.quantity)}</td><td class="n">${fmt(l.unit_price_cents)}</td><td class="n">${fmt(l.amount_cents)}</td></tr>`).join("")}</table></div>
    <div class="lower"><div class="notes">${q.notes ? `<div class="l">Notes</div><p>${esc(q.notes)}</p>` : ""}</div>
-    <div class="card"><table><tr><td>Subtotal</td><td class="n">${fmt(q.subtotal_cents)}</td></tr>
+    <div class="qcard"><table><tr><td>Subtotal</td><td class="n">${fmt(q.subtotal_cents)}</td></tr>
      ${q.discount_cents ? `<tr><td>Discount${q.discount_type === "percent" ? ` (${q.discount_value / 100}%)` : ""}</td><td class="n">-${fmt(q.discount_cents)}</td></tr>` : ""}
      ${q.tax_rate_bp ? `<tr><td>Tax (${q.tax_rate_bp / 100}%)</td><td class="n">${fmt(q.tax_cents)}</td></tr>` : ""}
      <tr class="tot"><td>Total</td><td class="n">${fmt(q.total_cents)}</td></tr></table></div></div>
@@ -488,7 +488,7 @@ window.printQuote = async id => { const q = await api(`/api/quotes/${id}`); prin
 async function printDoc(html, title) { await loadLogo();
   const w = window.open("", "_blank"); if (!w) return toast("Allow pop-ups for this site to print", true);
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(REF.settings.company_name)} ${esc(title)}</title>
-   <style>${INVDOC_CSS}${QDOC_CSS} body{margin:0;background:#fff} @page{size:auto;margin:10mm 0}</style></head><body>${html}</body></html>`);
+   <style>${INVDOC_CSS}${QDOC_CSS}${CDOC_CSS} body{margin:0;background:#fff} @page{size:auto;margin:10mm 0}</style></head><body>${html}</body></html>`);
   w.document.close(); w.focus(); setTimeout(() => w.print(), 300); }
 window.retainerDlg = () => openDlg("Generate monthly retainer invoices", `<p class="muted">Creates and issues one invoice per active client with a monthly retainer. Clients already invoiced for that month are skipped, so running it twice is safe.</p>
   <form class="grid" id="retF"><label>Month<input type="month" name="period" value="${today().slice(0, 7)}"></label><label>Invoice date <span class="muted">(blank = 1st)</span><input type="date" name="issue_date"></label>
@@ -503,6 +503,155 @@ window.rebillDlg = async cid => { const items = await api(`/api/unbilled-expense
   <button class="b p" type="button" onclick="doRebill(${cid})">Create draft invoice</button></form>`); };
 window.doRebill = cid => act(async () => { const f = formData($("#rbF")); const ids = [...document.querySelectorAll("#rbT input:checked")].map(c => +c.value);
   const r = await api("/api/rebill", {client_id: cid, issue_date: f.issue_date, markup_bp: pctToBp(f.markup), bill_ids: ids}); await render(); showInvoice(r.id); }, "Draft rebill invoice created");
+
+// ----- contracts -----
+const CDOC_CSS = `
+.cdoc{--brand:#1a73d1;--ink:#1c232b;--muted:#5f6b78;--rule:#d9dfe6;background:#fff;color:var(--ink);color-scheme:light;
+ font:13px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Open Sans",Helvetica,Arial,sans-serif;max-width:860px;margin:0 auto;overflow:hidden}
+.cdoc *{box-sizing:border-box}
+.cdoc td,.cdoc th{border:0;padding:0;white-space:normal;vertical-align:top}
+.cdoc .pad{padding-left:60px;padding-right:60px}
+.cdoc .serif,.cdoc h1,.cdoc h2{font-family:Georgia,"Times New Roman",serif;font-weight:normal}
+.cdoc .top{display:flex;justify-content:space-between;align-items:center;padding-top:40px;padding-bottom:18px;border-bottom:3px double var(--rule)}
+.cdoc .top img{max-height:40px;max-width:200px;display:block}
+.cdoc .wordmark{font-size:20px;font-weight:800;letter-spacing:.14em;color:var(--brand)}
+.cdoc .ref{text-align:right;font-size:11.5px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase}
+.cdoc .ref b{display:block;font-size:15px;color:var(--ink);letter-spacing:.04em;text-transform:none}
+.cdoc h1{text-align:center;font-size:27px;margin:34px 0 6px;letter-spacing:.01em}
+.cdoc .kind{text-align:center;color:var(--muted);font-size:11.5px;letter-spacing:.24em;text-transform:uppercase}
+.cdoc .intro{margin:28px 0 14px;text-align:center}
+.cdoc .parties{display:grid;grid-template-columns:1fr auto 1fr;gap:18px;align-items:stretch}
+.cdoc .party{border:1px solid var(--rule);border-radius:8px;padding:14px 16px}
+.cdoc .party .r{font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--brand);font-weight:700}
+.cdoc .party .n{font-size:15px;font-weight:700;margin-top:4px}
+.cdoc .party .d{font-size:12px;color:var(--muted);white-space:pre-line}
+.cdoc .and{align-self:center;font-family:Georgia,serif;font-style:italic;color:var(--muted)}
+.cdoc h2{font-size:17px;margin:34px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--rule)}
+.cdoc h2 .no{color:var(--brand);margin-right:8px}
+.cdoc table.keys{width:100%;border-collapse:collapse;border:1px solid var(--rule)}
+.cdoc .keys td{padding:9px 14px;border-bottom:1px solid var(--rule);font-size:12.5px}
+.cdoc .keys td:first-child{width:34%;background:#f6f8fa;color:var(--muted);font-weight:600}
+.cdoc .keys tr:last-child td{border-bottom:0}
+.cdoc .text{white-space:pre-line;font-size:12.5px}
+.cdoc .clauses{font-size:12.5px;line-height:1.6}.cdoc .clauses p{margin:0 0 9px}.cdoc .clauses b{color:var(--ink)}
+.cdoc .sigs{display:grid;grid-template-columns:1fr 1fr;gap:36px;margin-top:8px}
+.cdoc .sig .r{font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--brand);font-weight:700;margin-bottom:26px}
+.cdoc .line{border-top:1px solid #8a949e;margin-top:34px;padding-top:4px;font-size:11px;color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
+.cdoc .filled{font-size:13px;color:var(--ink);text-transform:none;letter-spacing:0;margin-bottom:-2px}
+.cdoc .stamp{display:inline-block;margin-top:10px;border:2.5px solid currentColor;border-radius:6px;padding:1px 10px;font-size:12px;font-weight:800;letter-spacing:.18em;transform:rotate(-4deg)}
+.cdoc .stamp.ok{color:#16794a}.cdoc .stamp.bad{color:#c0262d}.cdoc .stamp.draft{color:#9a6700}.cdoc .stamp.sent{color:var(--brand)}
+.cdoc .foot{margin-top:36px;padding-top:12px;padding-bottom:30px;border-top:1px solid var(--rule);color:var(--muted);font-size:11px;text-align:center}
+@media (max-width:640px){.cdoc .pad{padding-left:20px;padding-right:20px}.cdoc .parties{grid-template-columns:1fr}.cdoc .and{text-align:center}.cdoc .sigs{grid-template-columns:1fr}}
+@media print{.cdoc{max-width:none}.cdoc .pad{padding-left:18mm;padding-right:18mm}.cdoc .keys td:first-child{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+ .cdoc .sigs,.cdoc .parties,.cdoc h2{break-inside:avoid}.cdoc h2{break-after:avoid}}`;
+document.head.insertAdjacentHTML("beforeend", `<style>${CDOC_CSS}</style>`);
+const CSTATUS = {draft: ["DRAFT", "draft"], sent: ["SENT FOR SIGNATURE", "sent"], signed: ["SIGNED", "ok"], active: ["SIGNED · ACTIVE", "ok"], ended: ["ENDED", "bad"], cancelled: ["CANCELLED", "bad"]};
+const longDate = d => d ? new Date(d + "T00:00:00").toLocaleDateString("en-GB", {day: "numeric", month: "long", year: "numeric"}) : "";
+// "1. Services. The Agency will..." -> bold clause heading, one paragraph per clause
+const clauseHTML = text => text.split(/\n+/).filter(l => l.trim()).map(l => {
+  const m = l.match(/^(\s*\d+[.)]\s*[^.]{1,60}\.)(\s.*)?$/);
+  return `<p>${m ? `<b>${esc(m[1])}</b>${esc(m[2] || "")}` : esc(l)}</p>`; }).join("");
+function contractDoc(c) {
+  const s = REF.settings, st = CSTATUS[c.display_status];
+  const money = c.kind === "retainer" ? `${fmt(c.monthly_fee_cents)} per month` : fmt(c.value_cents);
+  const agency = [s.company_address, s.company_email, s.company_phone].filter(Boolean).join("\n");
+  let n = 0; const sec = t => `<h2><span class="no">${++n}.</span>${t}</h2>`;
+  return `<div class="cdoc" style="--brand:${brandColor()}">
+  <div class="top pad"><div>${LOGO ? `<img src="${esc(LOGO)}" alt="${esc(s.company_name)}">` : `<div class="wordmark">${esc(s.company_name.toUpperCase())}</div>`}</div>
+   <div class="ref">Agreement no.<b>${esc(c.number)}</b>${st ? `<span class="stamp ${st[1]}">${st[0]}</span>` : ""}</div></div>
+  <div class="pad"><h1>${esc(c.title)}</h1><div class="kind">${c.kind === "retainer" ? "Monthly retainer agreement" : "Project agreement"}</div>
+   <p class="intro serif">This agreement starts on <b>${longDate(c.start_date)}</b> and is made between:</p>
+   <div class="parties"><div class="party"><div class="r">The Agency</div><div class="n">${esc(s.company_name)}</div><div class="d">${esc(agency)}</div></div>
+    <div class="and">and</div>
+    <div class="party"><div class="r">The Client</div><div class="n">${esc(c.client_name)}</div><div class="d">${esc([c.client_address, c.client_email].filter(Boolean).join("\n"))}</div></div></div>
+   ${sec("Key terms")}<table class="keys">
+    <tr><td>Agreement type</td><td>${c.kind === "retainer" ? "Monthly retainer" : "Fixed-price project"}</td></tr>
+    <tr><td>Start date</td><td>${longDate(c.start_date)}</td></tr>
+    <tr><td>End date</td><td>${c.end_date ? longDate(c.end_date) : "Continues until ended with notice (see Terms)"}</td></tr>
+    <tr><td>${c.kind === "retainer" ? "Monthly fee" : "Contract value"}</td><td><b>${money}</b>${c.kind === "retainer" && c.value_cents ? ` · setup / one-off: ${fmt(c.value_cents)}` : ""}</td></tr>
+    ${c.payment_terms ? `<tr><td>Payment terms</td><td>${esc(c.payment_terms)}</td></tr>` : ""}
+    ${c.project_name ? `<tr><td>Project</td><td>${esc(c.project_name)}</td></tr>` : ""}
+    ${c.quote_number ? `<tr><td>Based on quotation</td><td>${esc(c.quote_number)}</td></tr>` : ""}</table>
+   ${c.scope ? sec("Scope of work") + `<div class="text">${esc(c.scope)}</div>` : ""}
+   ${c.clauses ? sec("Terms") + `<div class="clauses">${clauseHTML(c.clauses)}</div>` : ""}
+   ${sec("Signatures")}<p class="serif" style="margin:0 0 6px">Both parties agree to the terms of this agreement.</p>
+   <div class="sigs"><div class="sig"><div class="r">For ${esc(s.company_name)}</div><div class="line">Signature</div><div class="line">Name and title</div><div class="line">Date</div></div>
+    <div class="sig"><div class="r">For ${esc(c.client_name)}</div><div class="line">Signature</div>
+     <div class="line">${c.signed_by ? `<div class="filled">${esc(c.signed_by)}</div>` : ""}Name and title</div>
+     <div class="line">${c.signed_date ? `<div class="filled">${longDate(c.signed_date)}</div>` : ""}Date</div></div></div>
+   <div class="foot">${esc(s.company_name)} · ${esc(c.number)} · ${esc(c.title)}</div></div></div>`;
+}
+const cPill = st => `<span class="pill ${{active: "paid", signed: "paid", ended: "", cancelled: "overdue", sent: "open", draft: "draft"}[st] || ""}">${st === "sent" ? "awaiting signature" : st}</span>`;
+VIEWS.contracts = async () => {
+  const cs = await api("/api/contracts"), soon = new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10);
+  const active = cs.filter(c => c.display_status === "active"), retainers = active.filter(c => c.kind === "retainer");
+  const ending = active.filter(c => c.end_date && c.end_date <= soon), waiting = cs.filter(c => c.display_status === "sent");
+  page("Contracts", `<button class="b p" onclick="contractForm()">+ New contract</button>`, `
+  <div class="kpis"><div class="kpi"><div class="l">Active contracts</div><div class="v">${active.length}</div><div class="s">${waiting.length ? `${waiting.length} awaiting signature` : "none awaiting signature"}</div></div>
+   <div class="kpi"><div class="l">Monthly retainer income</div><div class="v">${fmt(retainers.reduce((t, c) => t + c.monthly_fee_cents, 0))}</div><div class="s">from ${retainers.length} active retainer${retainers.length === 1 ? "" : "s"}</div></div>
+   <div class="kpi"><div class="l">Ending in 30 days</div><div class="v">${ending.length}</div><div class="s">${ending.length ? "time to talk renewal" : "nothing ending soon"}</div></div></div>
+  <div class="card"><div class="row noprint" style="margin-bottom:8px"><select id="cStatus" onchange="filterC()"><option value="">All contracts</option>${["draft", "sent", "active", "signed", "ended", "cancelled"].map(k => opt(k, k === "sent" ? "Awaiting signature" : k[0].toUpperCase() + k.slice(1))).join("")}</select>
+   <input id="cText" placeholder="Search client / title / number" oninput="filterC()"><button class="b right" onclick="tableCSV($('#cT'),'contracts')">Export CSV</button></div>
+  <div class="wrap"><table id="cT"><tr><th>Number</th><th>Title</th><th>Client</th><th>Type</th><th>Start</th><th>End</th><th>Status</th><th class="n">Value</th></tr>
+  ${cs.map(c => `<tr class="click" data-s="${c.display_status}" data-t="${esc((c.number + " " + c.title + " " + c.client_name).toLowerCase())}" onclick="showContract(${c.id})">
+   <td>${esc(c.number)}</td><td>${esc(c.title)}</td><td>${esc(c.client_name)}</td><td>${c.kind === "retainer" ? "Retainer" : "Project"}</td><td>${c.start_date}</td><td>${c.end_date || "open-ended"}</td>
+   <td>${cPill(c.display_status)}${c.display_status === "active" && c.end_date && c.end_date <= soon ? ' <span class="pill overdue">ends soon</span>' : ""}</td>
+   <td class="n">${c.kind === "retainer" ? fmt(c.monthly_fee_cents) + "/mo" : fmt(c.value_cents)}</td></tr>`).join("")}
+  <tr id="cEmpty" hidden><td colspan=8 class="muted">No contracts here. Click “+ New contract”, or open an accepted quotation and click “Create contract”.</td></tr></table></div></div>`);
+  filterC();
+};
+window.filterC = () => { const st = $("#cStatus").value, t = $("#cText").value.toLowerCase(); let n = 0;
+  document.querySelectorAll("#cT tr[data-s]").forEach(r => { const ok = (!st || r.dataset.s === st) && r.dataset.t.includes(t); r.style.display = ok ? "" : "none"; n += ok; });
+  $("#cEmpty").hidden = n > 0; };
+window.contractForm = async id => {
+  const c = id ? await api(`/api/contracts/${id}`) : null, s = REF.settings, kind = c?.kind || "project";
+  openDlg(c ? `Edit contract ${c.number}` : "New contract", `<form class="grid" id="ctrF" onsubmit="event.preventDefault()">
+   <label style="grid-column:span 2">Title<input name="title" value="${esc(c?.title || "")}" placeholder="e.g. Website development agreement"></label>
+   <label>Type<select name="kind" onchange="ctrKind(this.value)">${opt("project", "Project (fixed price)", kind)}${opt("retainer", "Monthly retainer", kind)}</select></label>
+   <label>Client<select name="client_id" onchange="this.form.project_id.innerHTML=projectOpts(this.value)">${clientOpts(c?.client_id, "— choose —")}</select></label>
+   <label>Project<select name="project_id">${projectOpts(c?.client_id, c?.project_id)}</select></label>
+   <label>Start date<input type="date" name="start_date" value="${c?.start_date || today()}"></label>
+   <label>End date <span class="muted">(blank = until notice)</span><input type="date" name="end_date" value="${c?.end_date || ""}"></label>
+   <label id="ctrFee" ${kind === "retainer" ? "" : "hidden"}>Monthly fee<input name="monthly_fee" value="${c?.monthly_fee_cents ? dollars(c.monthly_fee_cents) : ""}" placeholder="0.00"></label>
+   <label><span id="ctrValLbl">${kind === "retainer" ? "One-off / setup fee (optional)" : "Contract value"}</span><input name="value" value="${c?.value_cents ? dollars(c.value_cents) : ""}" placeholder="0.00"></label>
+   <label style="grid-column:1/-1">Payment terms<textarea name="payment_terms" rows="2">${esc(c ? c.payment_terms : s.contract_payment_terms)}</textarea></label>
+   <label style="grid-column:1/-1">Scope of work <span class="muted">(deliverables, timeline, what's included and what isn't)</span><textarea name="scope" rows="6" placeholder="- Brand identity: logo, colours, typography&#10;- Website: 5 pages, delivered in 6 weeks&#10;- Not included: copywriting, hosting">${esc(c?.scope || "")}</textarea></label>
+   <label style="grid-column:1/-1">Terms / clauses <span class="muted">(from your template in Settings; edit for this contract if needed)</span><textarea name="clauses" rows="10">${esc(c ? c.clauses : s.contract_clauses)}</textarea></label></form>
+   <div class="row" style="margin-top:10px"><button class="b p right" onclick="saveContract(${id || 0})">Save contract</button></div>`); };
+window.ctrKind = k => { $("#ctrFee").hidden = k !== "retainer"; $("#ctrValLbl").textContent = k === "retainer" ? "One-off / setup fee (optional)" : "Contract value"; };
+window.saveContract = id => act(async () => { const f = formData($("#ctrF"));
+  if (!f.client_id) throw new Error("Choose a client");
+  const body = {title: f.title, kind: f.kind, client_id: f.client_id, project_id: f.project_id || null, start_date: f.start_date, end_date: f.end_date || null,
+    value_cents: toCents(f.value), monthly_fee_cents: f.kind === "retainer" ? toCents(f.monthly_fee) : 0, payment_terms: f.payment_terms, scope: f.scope, clauses: f.clauses};
+  if (id) await api(`/api/contracts/${id}`, body); else id = (await api("/api/contracts", body)).id;
+  await render(); showContract(id); }, "Contract saved");
+window.showContract = async id => {
+  const c = await api(`/api/contracts/${id}`); await loadLogo(); const editable = ["draft", "sent"].includes(c.status);
+  openDlg(`${c.number} · ${c.client_name}`, `<div class="row noprint" style="margin-bottom:12px">${cPill(c.display_status)}<span class="right"></span>
+   ${editable ? `<button class="b" onclick="contractForm(${id})">Edit</button>` : ""}
+   ${c.status === "draft" ? `<button class="b" onclick="setCStatus(${id},'sent')">Mark sent</button>` : ""}
+   ${editable ? `<button class="b p" onclick="signDlg(${id})">Mark signed</button>` : ""}
+   ${c.status !== "cancelled" ? `<button class="b d" onclick="cancelContract(${id}, ${c.status === "signed"})">${c.status === "signed" ? "Cancel contract" : "Cancel"}</button>` : ""}
+   <button class="b" onclick="dupContract(${id})">Duplicate</button>
+   <button class="b" onclick="printContract(${id})">Print / PDF</button>
+   ${c.status !== "signed" ? `<button class="b d" onclick="delContract(${id})">Delete</button>` : ""}</div>
+   ${c.status === "signed" ? `<div class="note" style="margin-top:0">Signed by <b>${esc(c.signed_by)}</b> on ${longDate(c.signed_date)}. Signed contracts are locked; use Duplicate to make a new version or renewal.</div>` : ""}
+   <div class="paper">${contractDoc(c)}</div>`); };
+window.setCStatus = (id, status) => act(async () => { await api(`/api/contracts/${id}/status`, {status}); await showContract(id); render(); }, "Status updated");
+window.cancelContract = (id, signed) => confirm(signed ? "Cancel this signed contract? It stays in your records marked Cancelled." : "Cancel this contract?")
+  && act(async () => { await api(`/api/contracts/${id}/status`, {status: "cancelled"}); await showContract(id); render(); }, "Contract cancelled");
+window.delContract = id => confirm("Delete this contract? This can't be undone.") && act(async () => { await api(`/api/contracts/${id}/delete`, {}); dlg.close(); render(); }, "Contract deleted");
+window.dupContract = id => act(async () => { const r = await api(`/api/contracts/${id}/duplicate`, {}); await render(); showContract(r.id); }, "Copy created as a new draft");
+window.printContract = async id => { const c = await api(`/api/contracts/${id}`); printDoc(contractDoc(c), `contract ${c.number}`); };
+window.contractFromQuote = id => act(async () => { const r = await api(`/api/quotes/${id}/contract`, {}); dlg.close(); location.hash = "contracts"; setTimeout(() => showContract(r.id), 300); }, "Contract drafted from the quotation. Check the scope and dates.");
+window.signDlg = async id => { const c = await api(`/api/contracts/${id}`); const cl = REF.clients.find(x => x.id === c.client_id);
+  openDlg(`Mark ${c.number} as signed`, `<form class="grid" id="sgF" onsubmit="event.preventDefault()">
+   <label>Date signed<input type="date" name="signed_date" value="${today()}"></label>
+   <label>Signed by (client's name and title)<input name="signed_by" placeholder="e.g. Ayesha Khan, Marketing Director"></label>
+   ${c.kind === "retainer" ? `<label class="chk" style="grid-column:1/-1"><input type="checkbox" name="update_retainer" checked> Set ${esc(c.client_name)}'s monthly retainer to ${fmt(c.monthly_fee_cents)}${cl?.retainer_cents ? ` (now ${fmt(cl.retainer_cents)})` : ""}, so "Generate retainers" bills it every month</label>` : ""}</form>
+   <p class="muted">Keep the signed copy (scan or PDF) with your records. This app records that it was signed; it doesn't collect electronic signatures.</p>
+   <div class="row"><button class="b p right" onclick="doSign(${id})">Save as signed</button></div>`); };
+window.doSign = id => act(async () => { const f = formData($("#sgF")); await api(`/api/contracts/${id}/sign`, f); await render(); showContract(id); }, "Contract marked as signed");
 
 // ----- quotations -----
 const QSTATUS = {draft: "draft", sent: "sent", accepted: "accepted", declined: "declined", expired: "expired", invoiced: "invoiced", "part-invoiced": "part invoiced"};
@@ -564,6 +713,7 @@ window.showQuote = async id => {
    ${["draft", "sent"].includes(q.status) && !locked ? statusBtn("accepted", "Mark accepted") + statusBtn("declined", "Mark declined") : ""}
    ${q.status === "declined" ? statusBtn("sent", "Reopen") : ""}
    <button class="b" onclick="dupQuote(${id})">Duplicate</button>
+   ${q.status !== "declined" ? `<button class="b" onclick="contractFromQuote(${id})">Create contract</button>` : ""}
    <button class="b" onclick="printQuote(${id})">Print / PDF</button>
    ${!q.invoices.some(i => i.status !== "void") ? `<button class="b d" onclick="delQuote(${id})">Delete</button>` : ""}
    ${q.invoiced_bp < 10000 && q.status !== "declined" ? `<button class="b p" onclick="convertDlg(${id})">${q.invoiced_bp ? "Invoice the rest" : "Convert to invoice"}</button>` : ""}</div>
@@ -847,6 +997,14 @@ VIEWS.settings = async () => { const s = REF.settings; await loadLogo();
   <div style="grid-column:1/-1;margin-top:-4px"><button type="button" class="b" onclick="$('#termsBox').value=REF.settings.short_terms;toast('Short terms filled in. Click Save branding to keep them.')">Use short standard terms</button></div>
   <label style="grid-column:span 2">Footer line <span class="muted">(optional)</span><input name="invoice_footer" value="${esc(s.invoice_footer)}"></label></form>
   <div class="row"><button class="b p right" onclick="act(async()=>{await api('/api/settings',formData($('#bF')));render()},'Invoice branding saved')">Save branding</button></div></div>
+  <div class="card"><h3 style="margin-top:0">Contract template</h3>
+  <p class="muted" style="margin-top:0">Every new contract starts with these. You can still change them on each contract. Changing them here doesn't alter contracts already written.</p>
+  <form class="grid" id="ctF" onsubmit="event.preventDefault()">
+  <label style="grid-column:1/-1">Default payment terms<textarea name="contract_payment_terms" rows="2">${esc(s.contract_payment_terms)}</textarea></label>
+  <label style="grid-column:1/-1">Standard clauses<textarea name="contract_clauses" id="clauseBox" rows="12">${esc(s.contract_clauses)}</textarea></label></form>
+  <div class="note">These standard clauses are a sensible starting template, not legal advice. Have a lawyer review them once, especially liability, termination and governing law.</div>
+  <div class="row"><button class="b" onclick="$('#clauseBox').value=REF.settings.standard_clauses;toast('Standard clauses filled in. Click Save template to keep them.')">Reset to standard clauses</button>
+   <button class="b p right" onclick="act(async()=>{await api('/api/settings',formData($('#ctF')));render()},'Contract template saved')">Save template</button></div></div>
   <div class="card"><h3 style="margin-top:0">Books</h3><form class="grid" id="sF" onsubmit="event.preventDefault()">
   <label>Company name<input name="company_name" value="${esc(s.company_name)}"></label>
   <label>Currency (ISO code)<input name="currency" value="${esc(s.currency)}" maxlength="3"></label>
@@ -857,6 +1015,8 @@ VIEWS.settings = async () => { const s = REF.settings; await loadLogo();
   <label>Quotation prefix<input name="quote_prefix" value="${esc(s.quote_prefix)}"></label>
   <label>Next quotation number<input name="next_quote_number" type="number" min="1" value="${esc(s.next_quote_number)}"></label>
   <label>Quotations valid for (days)<input name="quote_valid_days" type="number" min="0" max="365" value="${esc(s.quote_valid_days)}"></label>
+  <label>Contract prefix<input name="contract_prefix" value="${esc(s.contract_prefix)}"></label>
+  <label>Next contract number<input name="next_contract_number" type="number" min="1" value="${esc(s.next_contract_number)}"></label>
   <label>Books locked through<input type="date" name="lock_date" value="${esc(s.lock_date)}"></label></form>
   <div class="note">The <b>lock date</b> closes a period: nothing can be posted, edited or voided on or before it. Set it after you file a return or your accountant signs off on a month.</div>
   <div class="row"><button class="b p right" onclick="saveSettings()">Save settings</button></div></div>`); };

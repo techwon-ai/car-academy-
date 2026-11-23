@@ -443,6 +443,64 @@ class QuoteTests(Base):
             L.update_quote(self.c, qid, valid_until="2026-08-01")  # before quote date
 
 
+class ContractTests(Base):
+    def make(self, **kw):
+        args = dict(client_id=self.acme, title="Social media retainer", kind="retainer", start_date="2026-01-01",
+                    end_date="2026-12-31", monthly_fee_cents=15000000)
+        args.update(kw)
+        return L.create_contract(self.c, **args)
+
+    def test_create_defaults_and_numbering(self):
+        cid = self.make()
+        c = L.get_contract(self.c, cid)
+        self.assertEqual((c["number"], c["status"]), ("C-1001", "draft"))
+        self.assertIn("Governing law", c["clauses"])
+        self.assertIn("50% advance", c["payment_terms"])
+        self.assertEqual(L.get_contract(self.c, self.make())["number"], "C-1002")
+        self.assertEqual(self.c.execute("SELECT COUNT(*) FROM journal_entries").fetchone()[0], 0)
+
+    def test_validation(self):
+        for bad in (dict(title=""), dict(monthly_fee_cents=0), dict(kind="project"), dict(end_date="2025-01-01"),
+                    dict(kind="weird")):
+            with self.assertRaises(LedgerError, msg=bad):
+                self.make(**bad)
+
+    def test_sign_locks_and_sets_retainer(self):
+        cid = self.make()
+        L.set_contract_status(self.c, cid, "sent")
+        with self.assertRaises(LedgerError):
+            L.sign_contract(self.c, cid, "2026-01-02", "  ")
+        L.sign_contract(self.c, cid, "2026-01-02", "Ayesha Khan", update_retainer=True)
+        c = L.get_contract(self.c, cid)
+        self.assertEqual((c["status"], c["signed_by"]), ("signed", "Ayesha Khan"))
+        self.assertEqual(c["display_status"], "active" if L._today() <= "2026-12-31" else "ended")
+        self.assertEqual(L._client(self.c, self.acme)["retainer_cents"], 15000000)
+        with self.assertRaises(LedgerError):
+            L.update_contract(self.c, cid, title="changed")
+        with self.assertRaises(LedgerError):
+            L.delete_contract(self.c, cid)
+        L.set_contract_status(self.c, cid, "cancelled")
+        dup = L.get_contract(self.c, L.duplicate_contract(self.c, cid))
+        self.assertEqual((dup["status"], dup["title"]), ("draft", "Social media retainer"))
+
+    def test_ended_status(self):
+        cid = self.make(start_date="2025-01-01", end_date="2025-06-30")
+        L.sign_contract(self.c, cid, "2025-01-01", "A. Client")
+        self.assertEqual(L.get_contract(self.c, cid)["display_status"], "ended")
+
+    def test_from_quote(self):
+        qid = L.create_quote(self.c, self.acme, "2026-09-01", [
+            {"product": "Website Development", "description": "3 websites", "quantity": 3, "unit_price_cents": 2500000}],
+            notes="Delivery in 4 weeks")
+        c = L.get_contract(self.c, L.contract_from_quote(self.c, qid))
+        self.assertEqual((c["kind"], c["value_cents"], c["quote_number"]), ("project", 7500000, "Q-1001"))
+        self.assertEqual(c["title"], "Website Development agreement")
+        self.assertIn("Website Development - 3 websites (x3)", c["scope"])
+        self.assertIn("Delivery in 4 weeks", c["scope"])
+        L.update_contract(self.c, c["id"], end_date="2026-12-31")
+        L.delete_contract(self.c, c["id"])
+
+
 class RetainerTests(Base):
     def test_generate_is_idempotent(self):
         L.create_client(self.c, "No Retainer Co")

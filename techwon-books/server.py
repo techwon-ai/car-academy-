@@ -49,7 +49,7 @@ def _ids(body, *keys):
 # ---- reference data -------------------------------------------------------
 
 @route("GET", "/api/settings")
-def _(c, q, b): return {**L.get_settings(c), "short_terms": L.SHORT_TERMS}
+def _(c, q, b): return {**L.get_settings(c), "short_terms": L.SHORT_TERMS, "standard_clauses": L.CONTRACT_CLAUSES}
 @route("POST", "/api/settings")
 def _(c, q, b):
     _admin(c)
@@ -98,6 +98,24 @@ def _(c, q, b, iid): return L.get_invoice(c, iid)
 def _(c, q, b, iid):
     lines = b.pop("lines", None)
     return L.update_draft_invoice(c, iid, lines=lines, **b)
+@route("GET", "/api/contracts")
+def _(c, q, b): return L.list_contracts(c)
+@route("POST", "/api/contracts")
+def _(c, q, b): return {"id": L.create_contract(c, **b)}
+@route("GET", r"/api/contracts/(\d+)")
+def _(c, q, b, cid): return L.get_contract(c, cid)
+@route("POST", r"/api/contracts/(\d+)")
+def _(c, q, b, cid): return L.update_contract(c, cid, **b)
+@route("POST", r"/api/contracts/(\d+)/sign")
+def _(c, q, b, cid): return L.sign_contract(c, cid, b.get("signed_date"), b.get("signed_by"), bool(b.get("update_retainer")))
+@route("POST", r"/api/contracts/(\d+)/status")
+def _(c, q, b, cid): return L.set_contract_status(c, cid, b.get("status"))
+@route("POST", r"/api/contracts/(\d+)/delete")
+def _(c, q, b, cid): return L.delete_contract(c, cid)
+@route("POST", r"/api/contracts/(\d+)/duplicate")
+def _(c, q, b, cid): return {"id": L.duplicate_contract(c, cid)}
+@route("POST", r"/api/quotes/(\d+)/contract")
+def _(c, q, b, qid): return {"id": L.contract_from_quote(c, qid)}
 @route("GET", "/api/quotes")
 def _(c, q, b): return L.list_quotes(c)
 @route("POST", "/api/quotes")
