@@ -197,6 +197,7 @@ class DiscountTests(Base):
         self.c.execute("ALTER TABLE invoices DROP COLUMN discount_type")
         self.c.execute("ALTER TABLE invoices DROP COLUMN discount_value")
         self.c.execute("DELETE FROM accounts WHERE code = '4950'")
+        self.c.execute("ALTER TABLE invoice_lines DROP COLUMN product")
         L.init_db(self.c)
         L.init_db(self.c)  # running twice is harmless
         inv = L.create_invoice(self.c, self.acme, "2026-02-01", [{"description": "x", "unit_price_cents": 5000}],
@@ -259,6 +260,20 @@ class InvoiceEditTests(Base):
         L.update_draft_invoice(self.c, inv, client_id=other)
         d = L.get_invoice(self.c, inv)
         self.assertEqual((d["client_id"], d["project_id"]), (other, None))
+
+
+class ProductLineTests(Base):
+    def test_product_and_description(self):
+        inv = L.create_invoice(self.c, self.acme, "2026-09-24", [
+            {"product": "Website Development", "description": "3 websites for different brands", "quantity": 3,
+             "unit_price_cents": 2500000}], discount_type="amount", discount_value=2500000)
+        d = L.get_invoice(self.c, inv)
+        self.assertEqual((d["lines"][0]["product"], d["total_cents"]), ("Website Development", 5000000))
+        L.issue_invoice(self.c, inv)
+        L.create_invoice(self.c, self.acme, "2026-09-24", [{"product": "Only a product", "unit_price_cents": 100}])
+        with self.assertRaises(LedgerError):
+            L.create_invoice(self.c, self.acme, "2026-09-24", [{"unit_price_cents": 100}])
+        self.tb_ok()
 
 
 class BrandingTests(Base):

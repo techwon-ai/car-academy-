@@ -102,6 +102,7 @@ DEFAULT_SETTINGS = {
     "company_tax_id": "",
     "payment_instructions": "",
     "invoice_footer": "Thank you for your business.",
+    "invoice_terms": "",
     "brand_color": "#1a73d1",
 }
 LOGO_KEY = "logo"  # stored in settings, but served separately because it can be large
@@ -239,6 +240,7 @@ CREATE TABLE IF NOT EXISTS bills (
 CREATE TABLE IF NOT EXISTS invoice_lines (
   id INTEGER PRIMARY KEY,
   invoice_id INTEGER NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+  product TEXT NOT NULL DEFAULT '',
   description TEXT NOT NULL,
   quantity TEXT NOT NULL DEFAULT '1',
   unit_price_cents INTEGER NOT NULL,
@@ -306,7 +308,8 @@ def init_db(conn):
     for table, col, ddl in (
             ("journal_entries", "created_by", "created_by TEXT"),
             ("invoices", "discount_type", "discount_type TEXT CHECK (discount_type IN ('percent','amount'))"),
-            ("invoices", "discount_value", "discount_value INTEGER NOT NULL DEFAULT 0 CHECK (discount_value >= 0)")):
+            ("invoices", "discount_value", "discount_value INTEGER NOT NULL DEFAULT 0 CHECK (discount_value >= 0)"),
+            ("invoice_lines", "product", "product TEXT NOT NULL DEFAULT ''")):
         if col not in conn.columns(table):
             try:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
@@ -367,8 +370,8 @@ def update_settings(conn, values):
             raise LedgerError("next_invoice_number must be positive")
     if "brand_color" in values and not re.fullmatch(r"#[0-9a-fA-F]{6}", str(values["brand_color"])):
         raise LedgerError("brand_color must look like #1d4ed8")
-    for k in ("company_address", "payment_instructions", "invoice_footer"):
-        if k in values and len(str(values[k])) > 2000:
+    for k in ("company_address", "payment_instructions", "invoice_footer", "invoice_terms"):
+        if k in values and len(str(values[k])) > 5000:
             raise LedgerError(f"{k} is too long")
     if "default_tax_rate_bp" in values:
         if _int(values["default_tax_rate_bp"], "default_tax_rate_bp") < 0:
@@ -696,18 +699,19 @@ def _insert_invoice_lines(conn, invoice_id, lines):
     if not lines:
         raise LedgerError("An invoice needs at least one line")
     for i, ln in enumerate(lines, 1):
+        product = str(ln.get("product") or "").strip()
         desc = str(ln.get("description") or "").strip()
-        if not desc:
-            raise LedgerError(f"Line {i}: description is required")
+        if not desc and not product:
+            raise LedgerError(f"Line {i}: enter a product/service or a description")
         qty = _qty(ln.get("quantity", 1))
         price = _cents(ln.get("unit_price_cents"), f"line {i} unit price", allow_zero=True, allow_negative=True)
         acct = account_by_code(conn, ln.get("revenue_account_code") or "4100")
         if acct["type"] != "income":
             raise LedgerError(f"Line {i}: account {acct['code']} is not an income account")
         conn.execute(
-            "INSERT INTO invoice_lines(invoice_id, description, quantity, unit_price_cents, amount_cents,"
-            " revenue_account_id, taxable, bill_id) VALUES (?,?,?,?,?,?,?,?)",
-            (invoice_id, desc, str(qty), price, _round(qty * price), acct["id"],
+            "INSERT INTO invoice_lines(invoice_id, product, description, quantity, unit_price_cents, amount_cents,"
+            " revenue_account_id, taxable, bill_id) VALUES (?,?,?,?,?,?,?,?,?)",
+            (invoice_id, product[:200], desc, str(qty), price, _round(qty * price), acct["id"],
              1 if ln.get("taxable", True) else 0, ln.get("bill_id")))
 
 
@@ -939,7 +943,7 @@ def _invoice_entry_lines(conn, inv, totals, number):
     for l in conn.execute("SELECT * FROM invoice_lines WHERE invoice_id = ? AND amount_cents != 0", (inv["id"],)):
         amt = l["amount_cents"]
         lines.append({"account_id": l["revenue_account_id"], "client_id": cid, "project_id": pid,
-                      "memo": l["description"],
+                      "memo": " - ".join(x for x in (l["product"], l["description"]) if x),
                       **({"credit_cents": amt} if amt > 0 else {"debit_cents": -amt})})
     if totals["discount_cents"]:
         disc = account_by_code(conn, DISCOUNTS)

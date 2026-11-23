@@ -72,7 +72,8 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 let CUR = "USD";
 const fmt = (c, opts={}) => { if (c === null || c === undefined) return "—";
-  const s = new Intl.NumberFormat(undefined, {style:"currency", currency:CUR}).format(c/100);
+  let s; try { s = new Intl.NumberFormat(undefined, {style:"currency", currency:CUR, currencyDisplay:"narrowSymbol", minimumFractionDigits:2, maximumFractionDigits:2}).format(c/100); }
+  catch { s = new Intl.NumberFormat(undefined, {style:"currency", currency:CUR}).format(c/100); }
   return opts.color && c < 0 ? `<span class="neg">${s}</span>` : s; };
 function toCents(v) { // exact string parse: "1,234.5" -> 123450
   v = String(v ?? "").trim().replace(/[,\s$€£₩]/g, ""); if (v === "") return 0;
@@ -213,7 +214,7 @@ window.filterInv = () => { const s = $("#fStatus").value, t = $("#fText").value.
   $("#invEmpty").hidden = shown > 0; };
 
 const revOpts = sel => acctOpts(a => a.type === "income", sel);
-const lineRow = (l = {}) => `<tr><td><input name="description" value="${esc(l.description || "")}" placeholder="Description"></td>
+const lineRow = (l = {}) => `<tr><td style="width:190px"><input name="product" value="${esc(l.product || "")}" placeholder="Product or service"></td><td><input name="description" value="${esc(l.description || "")}" placeholder="Description"></td>
  <td style="width:80px"><input name="quantity" oninput="invCalc()" value="${esc(l.quantity || "1")}"></td>
  <td style="width:120px"><input name="unit_price" oninput="invCalc()" value="${l.unit_price_cents !== undefined ? dollars(l.unit_price_cents) : ""}" placeholder="0.00"></td>
  <td style="width:210px"><select name="revenue_account_code">${revOpts(l.revenue_account_code || "4100")}</select></td>
@@ -232,7 +233,7 @@ window.invoiceForm = async (id) => {
    <label>Discount<select name="discount_type" onchange="invCalc()">${opt("", "No discount", inv?.discount_type || "")}${opt("percent", "Percent off (%)", inv?.discount_type)}${opt("amount", "Fixed amount off", inv?.discount_type)}</select></label>
    <label>Discount value<input name="discount_value" oninput="invCalc()" placeholder="e.g. 10 or 250.00" value="${inv?.discount_type === "percent" ? inv.discount_value / 100 : inv?.discount_type === "amount" ? dollars(inv.discount_value) : ""}"></label>
    <label style="grid-column:1/-1">Note to client <span class="muted">(shown on the invoice; payment details come from Settings)</span><textarea name="notes" rows="2">${esc(inv?.notes || "")}</textarea></label></form>
-   <div class="wrap"><table class="lines" id="invL"><tr><th>Description</th><th>Qty / hrs</th><th>Rate</th><th>Income account</th><th>Tax</th><th></th></tr>
+   <div class="wrap"><table class="lines" id="invL"><tr><th>Product or service</th><th>Description</th><th>Qty / hrs</th><th>Rate</th><th>Income account</th><th>Tax</th><th></th></tr>
    ${(inv?.lines || [{}]).map(lineRow).join("")}</table></div>
    <div id="invSum" class="row muted" style="justify-content:flex-end;gap:18px;margin-top:8px;font-variant-numeric:tabular-nums"></div>
    <div class="row" style="margin-top:10px"><button class="b" onclick="$('#invL').insertAdjacentHTML('beforeend', lineRow());invCalc()">+ Line</button>
@@ -260,9 +261,9 @@ function pctToBp(v) { const c = toCents(v || "0"); if (c < 0) throw new Error("T
 window.saveInvoice = async (id, issue) => act(async () => {
   const f = formData($("#invF"));
   const lines = [...document.querySelectorAll("#invL tr")].slice(1).map(tr => ({
-    description: tr.querySelector("[name=description]").value, quantity: tr.querySelector("[name=quantity]").value || "1",
+    product: tr.querySelector("[name=product]").value, description: tr.querySelector("[name=description]").value, quantity: tr.querySelector("[name=quantity]").value || "1",
     unit_price_cents: toCents(tr.querySelector("[name=unit_price]").value), revenue_account_code: tr.querySelector("[name=revenue_account_code]").value,
-    taxable: tr.querySelector("[name=taxable]").checked})).filter(l => l.description || l.unit_price_cents);
+    taxable: tr.querySelector("[name=taxable]").checked})).filter(l => l.product || l.description || l.unit_price_cents);
   const body = {issue_date: f.issue_date, due_date: f.due_date || null, project_id: f.project_id || null, tax_rate_bp: pctToBp(f.tax_pct), notes: f.notes, lines, ...readDiscount(f)};
   const existing = id ? await api(`/api/invoices/${id}`) : null;
   if (existing?.status === "issued") {
@@ -276,74 +277,93 @@ window.saveInvoice = async (id, issue) => act(async () => {
 
 // ----- invoice document (screen, print and PDF share this) -----
 const INVDOC_CSS = `
-.invdoc{--brand:#1a73d1;--ink:#16202b;--muted:#5f6b7a;--rule:#e3e8ef;--tint:#f2f7fd;background:#fff;color:var(--ink);color-scheme:light;
- font:13.5px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;max-width:860px;margin:0 auto;
- padding:0 64px 56px;font-variant-numeric:tabular-nums;overflow:hidden}
+.invdoc{--brand:#1a73d1;--ink:#1f2933;--muted:#5b6672;--rule:#dfe4ea;--band:#ebf3fb;background:#fff;color:var(--ink);color-scheme:light;
+ font:13px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Open Sans",Helvetica,Arial,sans-serif;max-width:860px;margin:0 auto;
+ font-variant-numeric:tabular-nums;overflow:hidden}
 .invdoc *{box-sizing:border-box}
 .invdoc td,.invdoc th{border:0;padding:0;white-space:normal;vertical-align:top}
-.invdoc .accent{height:8px;margin:0 -64px 48px;background:linear-gradient(90deg,var(--brand),color-mix(in srgb,var(--brand) 55%,#5fd0ff))}
-.invdoc .top{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;flex-wrap:wrap}
-.invdoc .logo img{max-height:58px;max-width:250px;display:block}
-.invdoc .wordmark{font-size:26px;font-weight:800;letter-spacing:.14em;color:var(--brand)}
-.invdoc .co{font-weight:600;margin-top:12px}
+.invdoc .pad{padding-left:56px;padding-right:56px}
+.invdoc .head{display:grid;grid-template-columns:1.1fr 1fr auto;gap:28px;align-items:start;padding-top:40px;padding-bottom:30px}
+.invdoc .head h1{margin:0 0 4px;font-size:24px;font-weight:700;letter-spacing:.02em;color:var(--brand)}
+.invdoc .coname{font-weight:700;text-transform:uppercase;font-size:12.5px}
 .invdoc .small{color:var(--muted);font-size:12.5px;white-space:pre-line}
-.invdoc .title{text-align:right}
-.invdoc .title h1{margin:0;font-size:30px;letter-spacing:.2em;font-weight:300;color:var(--ink)}
-.invdoc .meta{margin:8px 0 0 auto;border-collapse:collapse}
-.invdoc .meta td{padding:2px 0 2px 18px;text-align:right;font-size:12.5px}
-.invdoc .meta td:first-child{color:var(--muted)}
-.invdoc .stamp{display:inline-block;margin-top:12px;transform:rotate(-5deg);border:2.5px solid currentColor;border-radius:6px;padding:2px 12px;
- font-size:15px;font-weight:800;letter-spacing:.2em}
+.invdoc .contact{padding-top:31px}
+.invdoc .logo img{max-height:52px;max-width:210px;display:block;margin-top:6px}
+.invdoc .wordmark{font-size:22px;font-weight:800;letter-spacing:.14em;color:var(--brand);margin-top:8px}
+.invdoc .band{background:var(--band);padding-top:22px;padding-bottom:22px}
+.invdoc .band .row2{display:grid;grid-template-columns:1fr 1fr;gap:28px}
+.invdoc .lbl{font-weight:700;font-size:12.5px;margin-bottom:3px}
+.invdoc .billto .name{text-transform:uppercase;font-size:13.5px}
+.invdoc .dash{border-top:1px dashed #b9c9da;margin:18px 0 16px}
+.invdoc .details td{padding:1px 14px 1px 0;font-size:13px}
+.invdoc .details td:first-child{color:var(--muted)}
+.invdoc .stamp{display:inline-block;transform:rotate(-5deg);border:2.5px solid currentColor;border-radius:6px;padding:2px 12px;
+ font-size:15px;font-weight:800;letter-spacing:.2em;background:#fff}
 .invdoc .stamp.paid{color:#16794a}.invdoc .stamp.void,.invdoc .stamp.overdue{color:#c0262d}.invdoc .stamp.draft{color:#9a6700}
-.invdoc .parties{display:grid;grid-template-columns:1fr 1fr;gap:32px;margin:40px 0 36px}
-.invdoc .label{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:600;margin-bottom:6px}
-.invdoc .billto b{font-size:15px}
-.invdoc .due{background:var(--tint);border-left:4px solid var(--brand);padding:14px 18px;border-radius:6px}
-.invdoc .due .amt{font-size:28px;font-weight:700;line-height:1.2}
-.invdoc table.items{width:100%;border-collapse:collapse}
-.invdoc .items th{font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);text-align:left;padding:10px 8px;border-bottom:2px solid var(--ink)}
-.invdoc .items td{padding:11px 8px;border-bottom:1px solid var(--rule);vertical-align:top}
+.invdoc table.items{width:100%;border-collapse:collapse;margin-top:20px}
+.invdoc .items th{font-weight:600;text-align:left;padding:10px 8px;border-bottom:1px solid var(--rule);font-size:13px}
+.invdoc .items td{padding:12px 8px;border-bottom:1px solid var(--rule);font-size:12.5px}
+.invdoc .items td.prod{font-weight:700}
+.invdoc .itemwrap{overflow-x:auto}
+.invdoc .items .num{color:var(--muted);width:28px}
 .invdoc .n,.invdoc .items th.n{text-align:right;white-space:nowrap}
-.invdoc .sum{display:flex;justify-content:flex-end;margin-top:18px}
-.invdoc .sum table{border-collapse:collapse;min-width:min(300px,100%)}
-.invdoc .sum td{padding:6px 10px}
-.invdoc .sum .grand td{border-top:2px solid var(--ink);font-weight:700;font-size:15px;padding-top:10px}
-.invdoc .sum .bal td{background:var(--brand);color:#fff;font-weight:700;font-size:15px}
-.invdoc .foot{margin-top:44px;display:grid;grid-template-columns:1fr 1fr;gap:32px}
-.invdoc .thanks{margin-top:44px;padding-top:14px;border-top:1px solid var(--rule);text-align:center;color:var(--muted);font-size:12px}
-@media (max-width:640px){.invdoc{padding:0 22px 32px}.invdoc .accent{margin:0 -22px 28px}.invdoc .parties,.invdoc .foot{grid-template-columns:1fr}
- .invdoc .title{text-align:left}.invdoc .meta{margin-left:0}.invdoc .meta td{text-align:left;padding:2px 18px 2px 0}}
-@media print{.invdoc{max-width:none;padding:0 18mm 10mm}.invdoc .accent{margin:0 -18mm 14mm}.invdoc .items tr{break-inside:avoid}.invdoc .sum,.invdoc .foot{break-inside:avoid}.invdoc .sum .bal td,.invdoc .due,.invdoc .accent{-webkit-print-color-adjust:exact;print-color-adjust:exact}}`;
+.invdoc .lower{display:grid;grid-template-columns:1fr minmax(260px,300px);gap:40px;margin-top:10px}
+.invdoc .note h3{margin:22px 0 6px;font-size:15px;font-weight:600}
+.invdoc .note .small{color:var(--ink)}
+.invdoc .totals{border-collapse:collapse;width:100%}
+.invdoc .totals td{padding:7px 0;font-size:12.5px}
+.invdoc .totals td:first-child{color:var(--muted);padding-left:16px}
+.invdoc .totals .total td{border-top:1px solid #9aa5b1;border-bottom:1px solid var(--rule);padding:12px 0;color:var(--ink);vertical-align:middle}
+.invdoc .totals .total td:first-child{font-weight:700;color:var(--ink)}
+.invdoc .totals .total td.n{font-size:20px;font-weight:700}
+.invdoc .totals .baldue td{font-weight:700;color:var(--ink);font-size:14px}
+.invdoc .terms{margin-top:28px}
+.invdoc .terms .t{font-size:12px;letter-spacing:.06em;text-transform:uppercase;margin-bottom:8px}
+.invdoc .terms .small{color:var(--ink);max-width:400px;font-size:12px;line-height:1.4}
+.invdoc .thanks{margin-top:28px;padding-top:12px;padding-bottom:32px;border-top:1px solid var(--rule);text-align:center;color:var(--muted);font-size:12px}
+.invdoc .end{height:32px}
+@media (max-width:640px){.invdoc .pad{padding-left:22px;padding-right:22px}.invdoc .head{grid-template-columns:1fr;gap:10px}.invdoc .contact{padding-top:0}
+ .invdoc .band .row2,.invdoc .lower{grid-template-columns:1fr;gap:16px}.invdoc .items{min-width:420px}.invdoc .items td,.invdoc .items th{padding-left:6px;padding-right:6px}}
+@media print{.invdoc{max-width:none}.invdoc .pad{padding-left:14mm;padding-right:14mm}.invdoc .head{padding-top:2mm}.invdoc .end{height:0}
+ .invdoc .band{-webkit-print-color-adjust:exact;print-color-adjust:exact}.invdoc .items tr,.invdoc .lower,.invdoc .terms{break-inside:avoid}}`;
 document.head.insertAdjacentHTML("beforeend", `<style>${INVDOC_CSS}
 .paper{border:1px solid var(--line);border-radius:10px;overflow:hidden;box-shadow:0 1px 2px #0000000f,0 8px 24px #00000014}</style>`);
-const niceDate = d => d ? new Date(d + "T00:00:00").toLocaleDateString(undefined, {year: "numeric", month: "short", day: "numeric"}) : "";
+// Invoices use day/month/year, as on Techwon's QuickBooks invoices.
+const niceDate = d => d ? d.slice(8, 10) + "/" + d.slice(5, 7) + "/" + d.slice(0, 4) : "";
 const brandColor = () => /^#[0-9a-f]{6}$/i.test(REF.settings.brand_color || "") ? REF.settings.brand_color : "#1a73d1";
+const termsLabel = i => { const days = Math.round((new Date(i.due_date) - new Date(i.issue_date)) / 864e5); return days <= 0 ? "Due on receipt" : `Net ${days}`; };
 function invoiceDoc(i) {
   const s = REF.settings;
-  const from = [s.company_address, s.company_email, s.company_phone, s.company_website, s.company_tax_id ? "Tax ID: " + s.company_tax_id : ""].filter(Boolean).join("\n");
+  const contact = [s.company_email, s.company_phone, s.company_website].filter(Boolean).join("\n");
   const stamp = {paid: "PAID", void: "VOID", draft: "DRAFT", overdue: "OVERDUE"}[i.display_status];
-  const due = i.status === "void" ? 0 : i.status === "draft" ? i.total_cents : i.balance_cents;
-  const dueLabel = i.status === "void" ? "Cancelled" : due === 0 ? "Paid in full" : "Amount due";
-  const dueNote = i.status === "void" ? "This invoice has been cancelled." : due === 0 ? "Thank you for your payment." : `Due by ${niceDate(i.due_date)}`;
-  return `<div class="invdoc" style="--brand:${brandColor()}"><div class="accent"></div>
-  <div class="top"><div><div class="logo">${LOGO ? `<img src="${esc(LOGO)}" alt="${esc(s.company_name)}">` : `<div class="wordmark">${esc(s.company_name.toUpperCase())}</div>`}</div>
-    ${LOGO ? `<div class="co">${esc(s.company_name)}</div>` : ""}<div class="small" style="margin-top:${LOGO ? 2 : 10}px">${esc(from)}</div></div>
-   <div class="title"><h1>INVOICE</h1><table class="meta"><tr><td>Invoice no.</td><td><b>${esc(i.number || "Draft")}</b></td></tr>
-    <tr><td>Issue date</td><td>${niceDate(i.issue_date)}</td></tr><tr><td>Due date</td><td>${niceDate(i.due_date)}</td></tr>
-    ${i.project_name ? `<tr><td>Project</td><td>${esc(i.project_name)}</td></tr>` : ""}</table>${stamp ? `<div class="stamp ${i.display_status}">${stamp}</div>` : ""}</div></div>
-  <div class="parties"><div class="billto"><div class="label">Bill to</div><b>${esc(i.client_name)}</b><div class="small" style="margin-top:4px">${esc([i.client_address, i.client_email].filter(Boolean).join("\n"))}</div></div>
-   <div class="due"><div class="label">${dueLabel}</div><div class="amt">${fmt(due)}</div><div class="small">${dueNote}</div></div></div>
-  <table class="items"><tr><th>Description</th><th class="n">Qty</th><th class="n">Rate</th><th class="n">Amount</th></tr>
-   ${i.lines.map(l => `<tr><td>${esc(l.description)}</td><td class="n">${esc(l.quantity)}</td><td class="n">${fmt(l.unit_price_cents)}</td><td class="n">${fmt(l.amount_cents)}</td></tr>`).join("")}</table>
-  <div class="sum"><table><tr><td>Subtotal</td><td class="n">${fmt(i.subtotal_cents)}</td></tr>
-   ${i.discount_cents ? `<tr><td>Discount${i.discount_type === "percent" ? ` (${i.discount_value / 100}%)` : ""}</td><td class="n">−${fmt(i.discount_cents)}</td></tr>` : ""}
-   ${i.tax_rate_bp ? `<tr><td>Tax (${i.tax_rate_bp / 100}%)</td><td class="n">${fmt(i.tax_cents)}</td></tr>` : ""}
-   <tr class="grand"><td>Total</td><td class="n">${fmt(i.total_cents)}</td></tr>
-   ${i.paid_cents ? `<tr><td>Paid</td><td class="n">−${fmt(i.paid_cents)}</td></tr>` : ""}
-   ${i.status !== "void" ? `<tr class="bal"><td>Balance due</td><td class="n">${fmt(due)}</td></tr>` : ""}</table></div>
-  ${s.payment_instructions || i.notes ? `<div class="foot"><div>${s.payment_instructions ? `<div class="label">How to pay</div><div class="small" style="color:var(--ink)">${esc(s.payment_instructions)}</div>` : ""}</div>
-   <div>${i.notes ? `<div class="label">Notes</div><div class="small" style="color:var(--ink)">${esc(i.notes)}</div>` : ""}</div></div>` : ""}
-  ${s.invoice_footer ? `<div class="thanks">${esc(s.invoice_footer)}</div>` : ""}</div>`;
+  const balance = i.status === "issued" ? i.balance_cents : i.status === "draft" ? i.total_cents : 0;
+  const note = [i.notes, s.payment_instructions].filter(Boolean).join("\n\n");
+  const hasProduct = i.lines.some(l => l.product);
+  return `<div class="invdoc" style="--brand:${brandColor()}">
+  <div class="head pad"><div><h1>INVOICE</h1><div class="coname">${esc(s.company_name)}</div><div class="small">${esc(s.company_address)}</div>
+    ${s.company_tax_id ? `<div class="small">Tax ID: ${esc(s.company_tax_id)}</div>` : ""}</div>
+   <div class="contact small">${esc(contact)}</div>
+   <div class="logo">${LOGO ? `<img src="${esc(LOGO)}" alt="${esc(s.company_name)}">` : `<div class="wordmark">${esc(s.company_name.toUpperCase())}</div>`}</div></div>
+  <div class="band pad"><div class="row2"><div class="billto"><div class="lbl">Bill to</div><div class="name">${esc(i.client_name)}</div>
+     <div class="small">${esc([i.client_address, i.client_email].filter(Boolean).join("\n"))}</div></div>
+    <div style="text-align:right">${stamp ? `<span class="stamp ${i.display_status}">${stamp}</span>` : ""}</div></div>
+   <div class="dash"></div>
+   <div class="lbl">Invoice details</div>
+   <table class="details"><tr><td>Invoice no.:</td><td>${esc(i.number || "Draft")}</td></tr><tr><td>Terms:</td><td>${termsLabel(i)}</td></tr>
+    <tr><td>Invoice date:</td><td>${niceDate(i.issue_date)}</td></tr><tr><td>Due date:</td><td>${niceDate(i.due_date)}</td></tr>
+    ${i.project_name ? `<tr><td>Project:</td><td>${esc(i.project_name)}</td></tr>` : ""}</table></div>
+  <div class="pad"><div class="itemwrap"><table class="items"><tr><th class="num">#</th>${hasProduct ? "<th>Product or service</th>" : ""}<th class="hide-sm">Description</th><th class="n">Qty</th><th class="n">Rate</th><th class="n">Amount</th></tr>
+   ${i.lines.map((l, k) => `<tr><td class="num">${k + 1}.</td>${hasProduct ? `<td class="prod">${esc(l.product)}</td>` : ""}<td class="hide-sm">${esc(l.description)}</td>
+    <td class="n">${esc(l.quantity)}</td><td class="n">${fmt(l.unit_price_cents)}</td><td class="n">${fmt(l.amount_cents)}</td></tr>`).join("")}</table></div>
+   <div class="lower"><div class="note">${note ? `<h3>Note to customer</h3><div class="small">${esc(note)}</div>` : ""}</div>
+    <table class="totals"><tr><td>Subtotal</td><td class="n">${fmt(i.subtotal_cents)}</td></tr>
+     ${i.discount_cents ? `<tr><td>Discount${i.discount_type === "percent" ? ` (${i.discount_value / 100}%)` : ""}</td><td class="n">-${fmt(i.discount_cents)}</td></tr>` : ""}
+     ${i.tax_rate_bp ? `<tr><td>Tax (${i.tax_rate_bp / 100}%)</td><td class="n">${fmt(i.tax_cents)}</td></tr>` : ""}
+     <tr class="total"><td>Total</td><td class="n">${fmt(i.total_cents)}</td></tr>
+     ${i.paid_cents ? `<tr><td>Paid</td><td class="n">-${fmt(i.paid_cents)}</td></tr>` : ""}
+     ${i.paid_cents && i.status === "issued" ? `<tr class="baldue"><td>Balance due</td><td class="n">${fmt(balance)}</td></tr>` : ""}</table></div>
+   ${s.invoice_terms ? `<div class="terms"><div class="t">Terms &amp; Conditions</div><div class="small">${esc(s.invoice_terms)}</div></div>` : ""}
+   ${s.invoice_footer ? `<div class="thanks">${esc(s.invoice_footer)}</div>` : `<div class="end"></div>`}</div></div>`;
 }
 
 window.showInvoice = async (id) => {
@@ -379,7 +399,7 @@ window.payInv = id => act(async () => { const f = formData($("#payF"));
 window.printInvoice = async id => { const i = await api(`/api/invoices/${id}`); await loadLogo();
   const w = window.open("", "_blank"); if (!w) return toast("Allow pop-ups for this site to print invoices", true);
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(REF.settings.company_name)} invoice ${esc(i.number || "draft")}</title>
-   <style>${INVDOC_CSS} body{margin:0;background:#fff} @page{size:A4;margin:12mm 0}</style></head><body>${invoiceDoc(i)}</body></html>`);
+   <style>${INVDOC_CSS} body{margin:0;background:#fff} @page{size:auto;margin:10mm 0}</style></head><body>${invoiceDoc(i)}</body></html>`);
   w.document.close(); w.focus(); setTimeout(() => w.print(), 300); };
 window.retainerDlg = () => openDlg("Generate monthly retainer invoices", `<p class="muted">Creates and issues one invoice per active client with a monthly retainer. Clients already invoiced for that month are skipped, so running it twice is safe.</p>
   <form class="grid" id="retF"><label>Month<input type="month" name="period" value="${today().slice(0, 7)}"></label><label>Invoice date <span class="muted">(blank = 1st)</span><input type="date" name="issue_date"></label>
@@ -612,8 +632,9 @@ VIEWS.settings = async () => { const s = REF.settings; await loadLogo();
   <label>Website<input name="company_website" value="${esc(s.company_website)}"></label>
   <label>Tax / VAT / GST number<input name="company_tax_id" value="${esc(s.company_tax_id)}"></label>
   <label>Brand colour<input type="color" name="brand_color" value="${esc(brandColor())}" style="height:34px;padding:2px"></label>
-  <label style="grid-column:span 2">How to pay (bank details, payment link)<textarea name="payment_instructions" rows="3" placeholder="Bank: …&#10;Account: …&#10;Reference: invoice number">${esc(s.payment_instructions)}</textarea></label>
-  <label style="grid-column:span 2">Footer line<input name="invoice_footer" value="${esc(s.invoice_footer)}"></label></form>
+  <label style="grid-column:span 2">Payment details (shown under "Note to customer")<textarea name="payment_instructions" rows="3" placeholder="Bank: …&#10;Account: …&#10;Reference: invoice number">${esc(s.payment_instructions)}</textarea></label>
+  <label style="grid-column:1/-1">Terms &amp; conditions <span class="muted">(printed at the bottom of every invoice)</span><textarea name="invoice_terms" rows="6">${esc(s.invoice_terms)}</textarea></label>
+  <label style="grid-column:span 2">Footer line <span class="muted">(optional)</span><input name="invoice_footer" value="${esc(s.invoice_footer)}"></label></form>
   <div class="row"><button class="b p right" onclick="act(async()=>{await api('/api/settings',formData($('#bF')));render()},'Invoice branding saved')">Save branding</button></div></div>
   <div class="card"><h3 style="margin-top:0">Books</h3><form class="grid" id="sF" onsubmit="event.preventDefault()">
   <label>Company name<input name="company_name" value="${esc(s.company_name)}"></label>
