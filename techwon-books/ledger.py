@@ -572,6 +572,12 @@ def _check_open_period(conn, date):
         raise LedgerError(f"The books are locked through {lock}; cannot post on {date}")
 
 
+def _money(conn, cents):
+    """Amount for messages people read, e.g. 'PKR 25,000.00'."""
+    cur = get_settings(conn).get("currency", "")
+    return f"{cur} {cents / 100:,.2f}".strip()
+
+
 def _one(conn, sql, args, what):
     row = conn.execute(sql, args).fetchone()
     if row is None:
@@ -1156,8 +1162,8 @@ def record_payment(conn, invoice_id, date, amount_cents, deposit_account_code=CA
             raise LedgerError("Payment date cannot be before the invoice date")
         bal = _invoice_totals(conn, inv["id"])["balance_cents"]
         if amount > bal:
-            raise LedgerError(f"Payment exceeds the open balance ({bal} cents). Record overpayments as a "
-                              "journal entry to Deferred Revenue.")
+            raise LedgerError(f"Payment is more than the {_money(conn, bal)} still owed on this invoice. "
+                              "Record any extra as a journal entry to Deferred Revenue.")
         bank = account_by_code(conn, deposit_account_code)
         if bank["subtype"] != "cash":
             raise LedgerError("Deposit account must be a bank/cash account")
@@ -1668,7 +1674,7 @@ def pay_bill(conn, bill_id, date, amount_cents, paid_from_account_code=CASH, ref
         amount = _cents(amount_cents)
         bal = b["amount_cents"] - _bill_paid(conn, b["id"])
         if amount > bal:
-            raise LedgerError(f"Payment exceeds the open bill balance ({bal} cents)")
+            raise LedgerError(f"Payment is more than the {_money(conn, bal)} still owed on this expense")
         src = account_by_code(conn, paid_from_account_code)
         if src["subtype"] not in ("cash", "credit_card"):
             raise LedgerError("Pay bills from a bank/cash or credit card account")

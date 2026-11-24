@@ -58,7 +58,7 @@ class IntegrationLogicTests(unittest.TestCase):
                                         "tax_cents": 100000, "issue_date": "2026-10-01"})
         d = X.invoice_doc(self.c, iid)
         self.assertEqual((d["tax_cents"], d["total_cents"]), (100000, 7600000))
-        with self.assertRaisesRegex(LedgerError, "exceeds the open balance"):
+        with self.assertRaisesRegex(LedgerError, "more than the"):
             X.record_payment(self.c, iid, {"amount_cents": 9000000, "date": "2026-10-02"})
         self.assertTrue(L.balance_sheet(self.c, "2026-12-31")["balanced"])
 
@@ -168,7 +168,7 @@ class IntegrationHTTPTests(unittest.TestCase):
         self.assertEqual((st, inv2["paid_cents"]), (200, 1000000))
         st, err = self.req("POST", f"/api/x/invoices/{inv['id']}/payments", {"amount_cents": 99000000})
         self.assertEqual(st, 400)
-        self.assertIn("exceeds", err["error"])
+        self.assertIn("more than the", err["error"])
         c = L.connect(server.Handler.db_target)
         who = {r[0] for r in c.execute("SELECT created_by FROM journal_entries")}
         c.close()

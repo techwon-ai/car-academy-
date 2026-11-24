@@ -246,6 +246,10 @@ def xroute(method, pattern):
 def _(c, q, b): return {"ok": True, "currency": L.get_settings(c)["currency"]}
 @xroute("POST", "/clients")
 def _(c, q, b): return {"id": X.upsert_client(c, b.get("external_id"), b.get("name"), b.get("email", ""), b.get("address", ""))}
+@xroute("POST", "/numbering")
+def _(c, q, b):
+    keys = {"invoice_prefix", "number_digits", "next_invoice_number", "quote_prefix", "next_quote_number"}
+    return {k: v for k, v in L.update_settings(c, {k: str(v) for k, v in b.items() if k in keys}).items() if k in keys}
 @xroute("GET", "/invoices")
 def _(c, q, b): return X.list_invoices(c, q.get("client"), q.get("include_void") == "1")
 @xroute("GET", r"/invoices/(\d+)")
