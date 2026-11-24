@@ -113,6 +113,25 @@ async function loadRef() {
   document.title = settings.company_name + " · Books"; }
 const acctOpts = (filter, sel) => REF.accounts.filter(a => a.is_active && filter(a)).map(a => opt(a.code, `${a.code} · ${a.name}`, sel)).join("");
 const clientOpts = (sel, blank = "— none —") => opt("", blank) + REF.clients.filter(c => c.is_active).map(c => opt(c.id, c.name, sel)).join("");
+// Client picker that can also add a client on the spot ("+ New client…").
+const NEWC = "__new";
+const clientPick = (sel, blank = "— choose —", attrs = "") => `<select name="client_id" ${attrs} onchange="clientChanged(this)">${opt("", blank, sel || "")}<option value="${NEWC}">+ New client…</option>${REF.clients.filter(c => c.is_active).map(c => opt(c.id, c.name, sel)).join("")}</select>`;
+const newClientFields = () => `<label class="newc" hidden>New client name<input name="new_client_name" placeholder="e.g. Bella Vista"></label><label class="newc" hidden>Client email <span class="muted">(optional)</span><input name="new_client_email" type="email"></label>`;
+window.clientChanged = sel => { const f = sel.form, isNew = sel.value === NEWC;
+  f.querySelectorAll(".newc").forEach(l => l.hidden = !isNew);
+  if (isNew) f.new_client_name.focus();
+  if (f.project_id) f.project_id.innerHTML = projectOpts(isNew ? -1 : sel.value); };
+// Returns the chosen client id, creating the client first if "+ New client…" was picked.
+async function resolveClient(form) {
+  const sel = form.querySelector("select[name=client_id]"); if (!sel || sel.value !== NEWC) return sel?.value || "";
+  const name = form.new_client_name.value.trim().replace(/\s+/g, " ");
+  if (!name) throw new Error("Enter the new client's name");
+  let c = REF.clients.find(x => x.name.toLowerCase() === name.toLowerCase());
+  if (!c) { const r = await api("/api/clients", {name, email: form.new_client_email.value.trim()}); REF.clients = await api("/api/clients"); c = REF.clients.find(x => x.id === r.id); }
+  // keep the form consistent so a retry after another error doesn't add the client twice
+  if (![...sel.options].some(o => o.value == c.id)) sel.insertAdjacentHTML("beforeend", opt(c.id, c.name));
+  sel.value = c.id; form.querySelectorAll(".newc").forEach(l => l.hidden = true);
+  return String(c.id); }
 const projectOpts = (clientId, sel) => opt("", "— none —") + REF.projects.filter(p => (!clientId || p.client_id == clientId) && p.status === "active")
   .map(p => opt(p.id, clientId ? p.name : `${p.client_name} · ${p.name}`, sel)).join("");
 
@@ -227,7 +246,7 @@ window.invoiceForm = async (id) => {
   openDlg(!inv ? "New invoice" : issued ? `Edit invoice ${inv.number}` : "Edit draft invoice", `
    ${issued ? `<div class="note" style="margin-top:0">Saving updates <b>${esc(inv.number)}</b> in your books under the same number; the journal keeps a record of the change. If the client already has this invoice, send them the updated copy.</div>` : ""}
    <form id="invF" class="grid" onsubmit="event.preventDefault()">
-   <label>Client<select name="client_id" required ${issued ? "disabled" : ""} onchange="this.form.project_id.innerHTML=projectOpts(this.value)">${clientOpts(inv?.client_id, "— choose —")}</select></label>
+   <label>Client${clientPick(inv?.client_id, "— choose —", issued ? "disabled" : "")}</label>${newClientFields()}
    <label>Project<select name="project_id">${projectOpts(inv?.client_id, inv?.project_id)}</select></label>
    <label>Invoice date<input type="date" name="issue_date" value="${inv?.issue_date || today()}" required></label>
    <label>Due date <span class="muted">(blank = client terms)</span><input type="date" name="due_date" value="${inv?.due_date || ""}"></label>
@@ -261,7 +280,7 @@ window.invCalc = () => { const out = $("#invSum"); if (!out) return;
   } catch (e) { out.textContent = e.message; } };
 function pctToBp(v) { const c = toCents(v || "0"); if (c < 0) throw new Error("Tax rate cannot be negative"); return c; } // "7.5" -> 750
 window.saveInvoice = async (id, issue) => act(async () => {
-  const f = formData($("#invF"));
+  const f = formData($("#invF")); if (!$("#invF [name=client_id]").disabled) f.client_id = await resolveClient($("#invF"));
   const lines = [...document.querySelectorAll("#invL tr")].slice(1).map(tr => ({
     product: tr.querySelector("[name=product]").value, description: tr.querySelector("[name=description]").value, quantity: tr.querySelector("[name=quantity]").value || "1",
     unit_price_cents: toCents(tr.querySelector("[name=unit_price]").value), revenue_account_code: tr.querySelector("[name=revenue_account_code]").value,
@@ -608,7 +627,7 @@ window.contractForm = async id => {
   openDlg(c ? `Edit contract ${c.number}` : "New contract", `<form class="grid" id="ctrF" onsubmit="event.preventDefault()">
    <label style="grid-column:span 2">Title<input name="title" value="${esc(c?.title || "")}" placeholder="e.g. Website development agreement"></label>
    <label>Type<select name="kind" onchange="ctrKind(this.value)">${opt("project", "Project (fixed price)", kind)}${opt("retainer", "Monthly retainer", kind)}</select></label>
-   <label>Client<select name="client_id" onchange="this.form.project_id.innerHTML=projectOpts(this.value)">${clientOpts(c?.client_id, "— choose —")}</select></label>
+   <label>Client${clientPick(c?.client_id)}</label>${newClientFields()}
    <label>Project<select name="project_id">${projectOpts(c?.client_id, c?.project_id)}</select></label>
    <label>Start date<input type="date" name="start_date" value="${c?.start_date || today()}"></label>
    <label>End date <span class="muted">(blank = until notice)</span><input type="date" name="end_date" value="${c?.end_date || ""}"></label>
@@ -619,7 +638,7 @@ window.contractForm = async id => {
    <label style="grid-column:1/-1">Terms / clauses <span class="muted">(from your template in Settings; edit for this contract if needed)</span><textarea name="clauses" rows="10">${esc(c ? c.clauses : s.contract_clauses)}</textarea></label></form>
    <div class="row" style="margin-top:10px"><button class="b p right" onclick="saveContract(${id || 0})">Save contract</button></div>`); };
 window.ctrKind = k => { $("#ctrFee").hidden = k !== "retainer"; $("#ctrValLbl").textContent = k === "retainer" ? "One-off / setup fee (optional)" : "Contract value"; };
-window.saveContract = id => act(async () => { const f = formData($("#ctrF"));
+window.saveContract = id => act(async () => { const f = formData($("#ctrF")); f.client_id = await resolveClient($("#ctrF"));
   if (!f.client_id) throw new Error("Choose a client");
   const body = {title: f.title, kind: f.kind, client_id: f.client_id, project_id: f.project_id || null, start_date: f.start_date, end_date: f.end_date || null,
     value_cents: toCents(f.value), monthly_fee_cents: f.kind === "retainer" ? toCents(f.monthly_fee) : 0, payment_terms: f.payment_terms, scope: f.scope, clauses: f.clauses};
@@ -679,7 +698,7 @@ window.filterQ = () => { const st = $("#qStatus").value, t = $("#qText").value.t
 window.quoteForm = async (id) => {
   const q = id ? await api(`/api/quotes/${id}`) : null; const s = REF.settings;
   openDlg(q ? `Edit quotation ${q.number}` : "New quotation", `<form id="invF" class="grid" onsubmit="event.preventDefault()">
-   <label>Client<select name="client_id" onchange="this.form.project_id.innerHTML=projectOpts(this.value)">${clientOpts(q?.client_id, "— choose —")}</select></label>
+   <label>Client${clientPick(q?.client_id)}</label>${newClientFields()}
    <label>Project<select name="project_id">${projectOpts(q?.client_id, q?.project_id)}</select></label>
    <label>Date<input type="date" name="issue_date" value="${q?.issue_date || today()}"></label>
    <label>Valid until <span class="muted">(blank = ${esc(s.quote_valid_days)} days)</span><input type="date" name="valid_until" value="${q?.valid_until || ""}"></label>
@@ -694,7 +713,7 @@ window.quoteForm = async (id) => {
    <button class="b p right" onclick="saveQuote(${id || 0})">Save quotation</button></div>`);
   invCalc();
 };
-window.saveQuote = id => act(async () => { const f = formData($("#invF"));
+window.saveQuote = id => act(async () => { const f = formData($("#invF")); f.client_id = await resolveClient($("#invF"));
   const lines = [...document.querySelectorAll("#invL tr")].slice(1).map(tr => ({
     product: tr.querySelector("[name=product]").value, description: tr.querySelector("[name=description]").value, quantity: tr.querySelector("[name=quantity]").value || "1",
     unit_price_cents: toCents(tr.querySelector("[name=unit_price]").value), revenue_account_code: tr.querySelector("[name=revenue_account_code]").value,
@@ -791,11 +810,11 @@ window.expenseForm = async () => { await loadCats(); const payees = await api("/
   <label id="exDue" hidden>Pay by<input type="date" name="due_date"></label>
   <label>Paid to <span class="muted">(optional)</span><input name="payee" list="payeeList" autocomplete="off" placeholder="e.g. staff, landlord, Meta"><datalist id="payeeList">${payees.map(x => `<option value="${esc(x)}">`).join("")}</datalist></label>
   <label style="grid-column:1/-1">Description<input name="description" placeholder="e.g. November salaries, client visit to Lahore"></label>
-  <label>Client <span class="muted">(optional)</span><select name="client_id" onchange="this.form.project_id.innerHTML=projectOpts(this.value)">${clientOpts()}</select></label>
+  <label>Client <span class="muted">(optional)</span>${clientPick("", "— none —")}</label>${newClientFields()}
   <label>Project<select name="project_id">${projectOpts()}</select></label>
   <label class="chk"><input type="checkbox" name="billable"> Charge this back to the client</label></form>
   <div class="row" style="margin-top:12px"><button class="b" onclick="catsDlg()">Add or edit categories</button><button class="b p right" onclick="saveExpense()">Save expense</button></div>`); };
-window.saveExpense = () => act(async () => { const f = formData($("#exF")); const amount = toCents(f.amount);
+window.saveExpense = () => act(async () => { const f = formData($("#exF")); const amount = toCents(f.amount); f.client_id = await resolveClient($("#exF"));
   if (amount <= 0) throw new Error("Enter the amount spent");
   if (!f.category_code) throw new Error("Choose a category");
   await api("/api/expenses", {date: f.date, amount_cents: amount, category_code: f.category_code, paid_from: f.paid_from || null,
@@ -841,10 +860,10 @@ window.clientForm = id => { const c = REF.clients.find(x => x.id === id) || {pay
 window.saveClient = id => act(async () => { const f = formData($("#cF"));
   const body = {name: f.name, email: f.email, address: f.address, retainer_cents: toCents(f.retainer), payment_terms_days: +f.terms};
   if (id) await api(`/api/clients/${id}`, {...body, is_active: f.is_active}); else await api("/api/clients", body); dlg.close(); render(); }, "Saved");
-window.projectForm = () => openDlg("New project", `<form class="grid" id="pF"><label>Client<select name="client_id">${clientOpts(null, "— choose —")}</select></label>
+window.projectForm = () => openDlg("New project", `<form class="grid" id="pF" onsubmit="event.preventDefault()"><label>Client${clientPick()}</label>${newClientFields()}
   <label>Project name<input name="name"></label><label>Budget (fee)<input name="budget" placeholder="0.00"></label></form>
   <div class="row"><button class="b p right" onclick="saveProject()">Save</button></div>`);
-window.saveProject = () => act(async () => { const f = formData($("#pF")); await api("/api/projects", {client_id: f.client_id, name: f.name, budget_cents: toCents(f.budget)}); dlg.close(); render(); }, "Saved");
+window.saveProject = () => act(async () => { const f = formData($("#pF")); f.client_id = await resolveClient($("#pF")); if (!f.client_id) throw new Error("Choose a client"); await api("/api/projects", {client_id: f.client_id, name: f.name, budget_cents: toCents(f.budget)}); dlg.close(); render(); }, "Saved");
 
 // ----- banking -----
 VIEWS.banking = async () => {
