@@ -30,7 +30,8 @@ RETAINER_REVENUE = "4000"
 PASSTHROUGH_REVENUE = "4300"
 REIMBURSED_REVENUE = "4400"
 DISCOUNTS = "4950"
-ADDED_LATER = {DISCOUNTS, "6550"}
+ADDED_LATER = {DISCOUNTS, "6550", "1030"}
+CASH_IN_HAND = "1030"
 GENERAL_PAYEE = "General expenses"  # used when an expense has no "paid to"
 
 ACCOUNT_TYPES = ("asset", "liability", "equity", "income", "expense")
@@ -49,6 +50,7 @@ DEFAULT_ACCOUNTS = [
     ("1000", "Operating Bank Account", "asset", "cash", 1),
     ("1010", "Savings Account", "asset", "cash", 0),
     ("1020", "Payment Processor Clearing (Stripe/PayPal)", "asset", "cash", 0),
+    ("1030", "Cash in Hand", "asset", "cash", 0),
     ("1100", "Accounts Receivable", "asset", "receivable", 1),
     ("1200", "Client Media Advances", "asset", "current_asset", 0),
     ("1300", "Prepaid Expenses", "asset", "current_asset", 0),
@@ -127,6 +129,7 @@ DEFAULT_SETTINGS = {
     "lock_date": "",
     "fiscal_year_start_month": "1",
     "invoice_prefix": "TW-",
+    "number_digits": "0",  # zero-pad document numbers, e.g. 4 -> INV-0012
     "quote_prefix": "Q-",
     "next_quote_number": "1001",
     "quote_valid_days": "15",
@@ -191,7 +194,8 @@ CREATE TABLE IF NOT EXISTS clients (
   address TEXT NOT NULL DEFAULT '',
   retainer_cents INTEGER NOT NULL DEFAULT 0 CHECK (retainer_cents >= 0),
   payment_terms_days INTEGER NOT NULL DEFAULT 15 CHECK (payment_terms_days >= 0),
-  is_active INTEGER NOT NULL DEFAULT 1
+  is_active INTEGER NOT NULL DEFAULT 1,
+  external_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS projects (
@@ -258,7 +262,10 @@ CREATE TABLE IF NOT EXISTS quotes (
   discount_type TEXT CHECK (discount_type IN ('percent','amount')),
   discount_value INTEGER NOT NULL DEFAULT 0 CHECK (discount_value >= 0),
   notes TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  tax_override_cents INTEGER,
+  external_id TEXT,
+  meta TEXT
 );
 
 CREATE TABLE IF NOT EXISTS quote_lines (
@@ -310,7 +317,10 @@ CREATE TABLE IF NOT EXISTS invoices (
   entry_id INTEGER REFERENCES journal_entries(id),
   void_entry_id INTEGER REFERENCES journal_entries(id),
   quote_id INTEGER REFERENCES quotes(id),
-  quote_pct_bp INTEGER
+  quote_pct_bp INTEGER,
+  tax_override_cents INTEGER,
+  external_id TEXT,
+  meta TEXT
 );
 
 CREATE TABLE IF NOT EXISTS bills (
@@ -353,7 +363,8 @@ CREATE TABLE IF NOT EXISTS payments (
   reference TEXT NOT NULL DEFAULT '',
   entry_id INTEGER NOT NULL REFERENCES journal_entries(id),
   voided INTEGER NOT NULL DEFAULT 0,
-  void_entry_id INTEGER REFERENCES journal_entries(id)
+  void_entry_id INTEGER REFERENCES journal_entries(id),
+  method TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS bill_payments (
@@ -405,13 +416,24 @@ def init_db(conn):
             ("invoices", "discount_value", "discount_value INTEGER NOT NULL DEFAULT 0 CHECK (discount_value >= 0)"),
             ("invoice_lines", "product", "product TEXT NOT NULL DEFAULT ''"),
             ("invoices", "quote_id", "quote_id INTEGER REFERENCES quotes(id)"),
-            ("invoices", "quote_pct_bp", "quote_pct_bp INTEGER")):
+            ("invoices", "quote_pct_bp", "quote_pct_bp INTEGER"),
+            ("clients", "external_id", "external_id TEXT"),
+            ("invoices", "tax_override_cents", "tax_override_cents INTEGER"),
+            ("invoices", "external_id", "external_id TEXT"),
+            ("invoices", "meta", "meta TEXT"),
+            ("quotes", "tax_override_cents", "tax_override_cents INTEGER"),
+            ("quotes", "external_id", "external_id TEXT"),
+            ("quotes", "meta", "meta TEXT"),
+            ("payments", "method", "method TEXT NOT NULL DEFAULT ''")):
         if col not in conn.columns(table):
             try:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
             except Exception:
                 if col not in conn.columns(table):
                     raise
+    for table in ("clients", "invoices", "quotes"):  # one Books record per outside record
+        conn.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS ux_{table}_external ON {table}(external_id)"
+                     " WHERE external_id IS NOT NULL")
     with tx(conn):
         for k, v in DEFAULT_SETTINGS.items():
             conn.execute("INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING", (k, v))
@@ -475,6 +497,8 @@ def update_settings(conn, values):
     for k in ("company_address", "payment_instructions", "invoice_footer", "invoice_terms"):
         if k in values and len(str(values[k])) > 5000:
             raise LedgerError(f"{k} is too long")
+    if "number_digits" in values and not 0 <= _int(values["number_digits"], "number_digits") <= 8:
+        raise LedgerError("number_digits must be between 0 and 8")
     if "next_quote_number" in values and _int(values["next_quote_number"], "next_quote_number") < 1:
         raise LedgerError("next_quote_number must be positive")
     if "next_contract_number" in values and _int(values["next_contract_number"], "next_contract_number") < 1:
@@ -867,19 +891,19 @@ def create_invoice(conn, client_id, issue_date, lines, due_date=None, project_id
 
 
 def _invoice_totals(conn, invoice_id):
-    inv = conn.execute("SELECT tax_rate_bp, discount_type, discount_value FROM invoices WHERE id = ?",
+    inv = conn.execute("SELECT tax_rate_bp, discount_type, discount_value, tax_override_cents FROM invoices WHERE id = ?",
                        (invoice_id,)).fetchone()
     sub = conn.execute("SELECT COALESCE(SUM(amount_cents),0) FROM invoice_lines WHERE invoice_id = ?",
                        (invoice_id,)).fetchone()[0]
     taxable = conn.execute("SELECT COALESCE(SUM(amount_cents),0) FROM invoice_lines WHERE invoice_id = ? AND taxable = 1",
                            (invoice_id,)).fetchone()[0]
-    t = _totals_math(sub, taxable, inv["tax_rate_bp"], inv["discount_type"], inv["discount_value"])
+    t = _totals_math(sub, taxable, inv["tax_rate_bp"], inv["discount_type"], inv["discount_value"], inv["tax_override_cents"])
     paid = conn.execute("SELECT COALESCE(SUM(amount_cents),0) FROM payments WHERE invoice_id = ? AND voided = 0",
                         (invoice_id,)).fetchone()[0]
     return {**t, "paid_cents": paid, "balance_cents": t["total_cents"] - paid}
 
 
-def _totals_math(sub, taxable, tax_rate_bp, discount_type, discount_value):
+def _totals_math(sub, taxable, tax_rate_bp, discount_type, discount_value, tax_override=None):
     if discount_type == "percent":
         discount = _round(Decimal(sub) * discount_value / Decimal(10000))
     elif discount_type == "amount":
@@ -890,7 +914,7 @@ def _totals_math(sub, taxable, tax_rate_bp, discount_type, discount_value):
     # part in proportion to its share of the subtotal.
     if discount and sub > 0:
         taxable -= _round(Decimal(discount) * taxable / Decimal(sub))
-    tax = _round(Decimal(taxable) * tax_rate_bp / Decimal(10000))
+    tax = tax_override if tax_override is not None else _round(Decimal(taxable) * tax_rate_bp / Decimal(10000))
     return {"subtotal_cents": sub, "discount_cents": discount, "tax_cents": tax, "total_cents": sub - discount + tax}
 
 
@@ -1080,20 +1104,26 @@ def _invoice_entry_lines(conn, inv, totals, number):
     return lines
 
 
-def issue_invoice(conn, invoice_id):
-    """Assign the next invoice number and post: Dr A/R, Cr revenue (+ Cr sales tax)."""
+def issue_invoice(conn, invoice_id, number=None):
+    """Assign the next invoice number (or a given one, for imports) and post: Dr A/R, Cr revenue (+ Cr sales tax)."""
     with tx(conn):
         inv = _one(conn, "SELECT * FROM invoices WHERE id = ?", (_int(invoice_id, "invoice_id"),), "Invoice")
         if inv["status"] != "draft":
             raise LedgerError(f"Invoice is already {inv['status']}")
         totals = _check_invoice_totals(conn, inv["id"])
-        s = get_settings(conn)
-        n = int(s["next_invoice_number"])
-        number = f"{s['invoice_prefix']}{n}"
-        while conn.execute("SELECT 1 FROM invoices WHERE number = ?", (number,)).fetchone():
-            n += 1
-            number = f"{s['invoice_prefix']}{n}"
-        conn.execute("UPDATE settings SET value = ? WHERE key = 'next_invoice_number'", (str(n + 1),))
+        if number:
+            number = str(number).strip()[:40]
+            if conn.execute("SELECT 1 FROM invoices WHERE number = ?", (number,)).fetchone():
+                raise LedgerError(f"Invoice number {number} is already used")
+        else:
+            s = get_settings(conn)
+            n = int(s["next_invoice_number"])
+            fmt_no = lambda k: f"{s['invoice_prefix']}{str(k).zfill(int(s.get('number_digits') or 0))}"  # noqa: E731
+            number = fmt_no(n)
+            while conn.execute("SELECT 1 FROM invoices WHERE number = ?", (number,)).fetchone():
+                n += 1
+                number = fmt_no(n)
+            conn.execute("UPDATE settings SET value = ? WHERE key = 'next_invoice_number'", (str(n + 1),))
         eid = _post(conn, inv["issue_date"], f"Invoice {number}", _invoice_entry_lines(conn, inv, totals, number),
                     "invoice", inv["id"])
         conn.execute("UPDATE invoices SET status = 'issued', number = ?, entry_id = ? WHERE id = ?",
@@ -1114,7 +1144,7 @@ def void_invoice(conn, invoice_id, date=None):
         conn.execute("UPDATE bills SET rebilled_invoice_id = NULL WHERE rebilled_invoice_id = ?", (inv["id"],))
 
 
-def record_payment(conn, invoice_id, date, amount_cents, deposit_account_code=CASH, reference=""):
+def record_payment(conn, invoice_id, date, amount_cents, deposit_account_code=CASH, reference="", method=""):
     """Customer payment: Dr bank, Cr A/R."""
     with tx(conn):
         inv = _one(conn, "SELECT * FROM invoices WHERE id = ?", (_int(invoice_id, "invoice_id"),), "Invoice")
@@ -1137,8 +1167,9 @@ def record_payment(conn, invoice_id, date, amount_cents, deposit_account_code=CA
              "project_id": inv["project_id"]},
         ], "payment", inv["id"])
         return conn.execute(
-            "INSERT INTO payments(invoice_id, date, amount_cents, deposit_account_id, reference, entry_id)"
-            " VALUES (?,?,?,?,?,?)", (inv["id"], date, amount, bank["id"], str(reference or ""), eid)).lastrowid
+            "INSERT INTO payments(invoice_id, date, amount_cents, deposit_account_id, reference, entry_id, method)"
+            " VALUES (?,?,?,?,?,?,?)", (inv["id"], date, amount, bank["id"], str(reference or ""), eid,
+                                       str(method or "")[:30])).lastrowid
 
 
 def void_payment(conn, payment_id, date=None):
@@ -1198,7 +1229,7 @@ def _quote_totals(conn, quote_id):
     sub = conn.execute("SELECT COALESCE(SUM(amount_cents),0) FROM quote_lines WHERE quote_id = ?", (quote_id,)).fetchone()[0]
     taxable = conn.execute("SELECT COALESCE(SUM(amount_cents),0) FROM quote_lines WHERE quote_id = ? AND taxable = 1",
                            (quote_id,)).fetchone()[0]
-    t = _totals_math(sub, taxable, q["tax_rate_bp"], q["discount_type"], q["discount_value"])
+    t = _totals_math(sub, taxable, q["tax_rate_bp"], q["discount_type"], q["discount_value"], q["tax_override_cents"])
     return {**t, "invoiced_bp": _invoiced_bp(conn, quote_id)}
 
 
@@ -1260,7 +1291,7 @@ def _quote_header(conn, fields, current=None):
     return out
 
 
-def create_quote(conn, client_id, issue_date, lines, **fields):
+def create_quote(conn, client_id, issue_date, lines, number=None, **fields):
     with tx(conn):
         h = _quote_header(conn, {**fields, "client_id": client_id, "issue_date": issue_date})
         s = get_settings(conn)
@@ -1270,11 +1301,17 @@ def create_quote(conn, client_id, issue_date, lines, **fields):
         if h["valid_until"] < h["issue_date"]:
             raise LedgerError("valid_until cannot be before the quotation date")
         h.setdefault("tax_rate_bp", int(s["default_tax_rate_bp"]))
-        n = int(s["next_quote_number"])
-        while conn.execute("SELECT 1 FROM quotes WHERE number = ?", (f"{s['quote_prefix']}{n}",)).fetchone():
-            n += 1
-        conn.execute("UPDATE settings SET value = ? WHERE key = 'next_quote_number'", (str(n + 1),))
-        h["number"] = f"{s['quote_prefix']}{n}"
+        if number:
+            h["number"] = str(number).strip()[:40]
+            if conn.execute("SELECT 1 FROM quotes WHERE number = ?", (h["number"],)).fetchone():
+                raise LedgerError(f"Quotation number {h['number']} is already used")
+        else:
+            n = int(s["next_quote_number"])
+            fmt_no = lambda k: f"{s['quote_prefix']}{str(k).zfill(int(s.get('number_digits') or 0))}"  # noqa: E731
+            while conn.execute("SELECT 1 FROM quotes WHERE number = ?", (fmt_no(n),)).fetchone():
+                n += 1
+            conn.execute("UPDATE settings SET value = ? WHERE key = 'next_quote_number'", (str(n + 1),))
+            h["number"] = fmt_no(n)
         cols = list(h)
         qid = conn.execute(f"INSERT INTO quotes({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
                            [h[c] for c in cols]).lastrowid

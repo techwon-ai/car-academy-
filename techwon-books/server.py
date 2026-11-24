@@ -17,6 +17,7 @@ logins locally too.
 
 import argparse
 import getpass
+import hmac
 import http.cookies
 import json
 import os
@@ -30,6 +31,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import auth  # noqa: E402
+import integration as X  # noqa: E402
 import ledger as L  # noqa: E402
 
 ROUTES = []
@@ -228,6 +230,52 @@ def _(c, q, b):
     return {"id": L.reconcile(c, b.get("account_code"), b.get("statement_date"),
                               b.get("statement_balance_cents"), b.get("line_ids"))}
 
+# ---- portal integration (server-to-server, shared key) ----------------------
+
+XROUTES = []
+
+
+def xroute(method, pattern):
+    def deco(fn):
+        XROUTES.append((method, re.compile("^/api/x" + pattern + "$"), fn))
+        return fn
+    return deco
+
+
+@xroute("GET", "/ping")
+def _(c, q, b): return {"ok": True, "currency": L.get_settings(c)["currency"]}
+@xroute("POST", "/clients")
+def _(c, q, b): return {"id": X.upsert_client(c, b.get("external_id"), b.get("name"), b.get("email", ""), b.get("address", ""))}
+@xroute("GET", "/invoices")
+def _(c, q, b): return X.list_invoices(c, q.get("client"), q.get("include_void") == "1")
+@xroute("GET", r"/invoices/(\d+)")
+def _(c, q, b, iid): return X.invoice_doc(c, iid)
+@xroute("POST", "/invoices")
+def _(c, q, b): return X.invoice_doc(c, X.create_invoice(c, b))
+@xroute("POST", r"/invoices/(\d+)/update")
+def _(c, q, b, iid):
+    X.update_invoice(c, iid, b.get("due_date"), b.get("notes"), b.get("meta"))
+    return X.invoice_doc(c, iid)
+@xroute("POST", r"/invoices/(\d+)/payments")
+def _(c, q, b, iid):
+    X.record_payment(c, iid, b)
+    return X.invoice_doc(c, iid)
+@xroute("POST", r"/invoices/(\d+)/remove")
+def _(c, q, b, iid):
+    X.remove_invoice(c, iid)
+    return {"ok": True}
+@xroute("GET", "/quotes")
+def _(c, q, b): return X.list_quotes(c, q.get("client"))
+@xroute("GET", r"/quotes/(\d+)")
+def _(c, q, b, qid): return X.quote_doc(c, qid)
+@xroute("POST", "/quotes")
+def _(c, q, b): return X.quote_doc(c, X.create_quote(c, b))
+@xroute("POST", r"/quotes/(\d+)/update")
+def _(c, q, b, qid):
+    X.update_quote(c, qid, b.get("status"), b.get("notes"), b.get("meta"))
+    return X.quote_doc(c, qid)
+
+
 # ---- users (online mode) --------------------------------------------------
 
 def _admin(c):
@@ -398,8 +446,14 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(body, dict):
                 return self._send(400, {"error": "JSON body must be an object"})
         handler = None
+        is_x = url.path.startswith("/api/x/")
+        if is_x:
+            key = os.environ.get("BOOKS_INTEGRATION_KEY", "")
+            given = (self.headers.get("Authorization") or "").removeprefix("Bearer ").strip()
+            if len(key) < 32 or not hmac.compare_digest(given.encode(), key.encode()):
+                return self._send(401, {"error": "Integration key missing or wrong"})
         if (method, url.path) not in PUBLIC_ROUTES:
-            for m, rx, fn in ROUTES:
+            for m, rx, fn in (XROUTES if is_x else ROUTES):
                 match = rx.match(url.path)
                 if m == method and match:
                     handler = (fn, match.groups())
@@ -416,7 +470,10 @@ class Handler(BaseHTTPRequestHandler):
                 status, payload, cookie = self._auth_routes(conn, method, url.path, body)
                 return self._send(status, payload, cookie=cookie)
             conn.auth_user = None
-            if self.require_login:
+            if is_x:  # the portal says which of its users is acting, for the audit trail
+                actor = " ".join((self.headers.get("X-Acting-User") or "").split())[:80]
+                conn.user = f"portal: {actor}" if actor else "portal"
+            elif self.require_login:
                 user = self._session_user(conn)
                 if not user:
                     raise Unauthorized("Please sign in")

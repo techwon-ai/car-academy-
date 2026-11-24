@@ -1031,6 +1031,7 @@ VIEWS.settings = async () => { const s = REF.settings; await loadLogo();
   <label>Default tax rate %<input name="tax_pct" value="${+s.default_tax_rate_bp / 100}"></label>
   <label>Invoice prefix<input name="invoice_prefix" value="${esc(s.invoice_prefix)}"></label>
   <label>Next invoice number<input name="next_invoice_number" type="number" min="1" value="${esc(s.next_invoice_number)}"></label>
+  <label>Number digits <span class="muted">(4 → INV-0012)</span><input name="number_digits" type="number" min="0" max="8" value="${esc(s.number_digits)}"></label>
   <label>Quotation prefix<input name="quote_prefix" value="${esc(s.quote_prefix)}"></label>
   <label>Next quotation number<input name="next_quote_number" type="number" min="1" value="${esc(s.next_quote_number)}"></label>
   <label>Quotations valid for (days)<input name="quote_valid_days" type="number" min="0" max="365" value="${esc(s.quote_valid_days)}"></label>
