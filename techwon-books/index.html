@@ -56,6 +56,8 @@ nav h1{width:100%;margin:4px 6px 8px}nav button{width:auto}main{padding:16px}}
 .who{margin-top:18px;padding:10px;border-top:1px solid #ffffff22;font-size:12px;color:#8b949e;word-break:break-all}
 .who button{padding:6px 10px;font-size:12px}
 [hidden]{display:none!important}
+.pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin-bottom:16px}.pgrid .card{margin:0}
+.pbal{font-size:24px;font-weight:600;font-variant-numeric:tabular-nums;margin-top:8px}.pcard table td{padding:4px 0;border:0;font-size:13px}
 #billT td:first-child,#invT td:nth-child(4),#invT td:nth-child(5){white-space:nowrap}
 @media print{nav,header.top .b,.noprint{display:none!important}main{padding:0}.card{border:0}}
 </style>
@@ -105,9 +107,9 @@ function tableCSV(tbl, name) { const rows = [...tbl.querySelectorAll("tr")].map(
 // cached reference data
 let REF = {accounts: [], clients: [], projects: [], vendors: [], settings: {}};
 async function loadRef() {
-  const [accounts, clients, projects, vendors, settings] = await Promise.all(
-    ["/api/accounts", "/api/clients", "/api/projects", "/api/vendors", "/api/settings"].map(p => api(p)));
-  REF = {accounts, clients, projects, vendors, settings}; CUR = settings.currency || "USD"; await loadLogo();
+  const [accounts, clients, projects, vendors, settings, partners] = await Promise.all(
+    ["/api/accounts", "/api/clients", "/api/projects", "/api/vendors", "/api/settings", "/api/partners"].map(p => api(p)));
+  REF = {accounts, clients, projects, vendors, settings, partners}; CUR = settings.currency || "USD"; await loadLogo();
   if (LOGO) $("#co").innerHTML = `<img src="${esc(LOGO)}" alt="${esc(settings.company_name)}" style="display:block;max-width:170px;max-height:42px">`;
   else $("#co").textContent = settings.company_name;
   document.title = settings.company_name + " · Books"; }
@@ -136,7 +138,7 @@ const projectOpts = (clientId, sel) => opt("", "— none —") + REF.projects.fi
   .map(p => opt(p.id, clientId ? p.name : `${p.client_name} · ${p.name}`, sel)).join("");
 
 // ---------- routing ----------
-const PAGES = {dashboard: "Dashboard", quotes: "Quotations", contracts: "Contracts", invoices: "Invoices", expenses: "Expenses", clients: "Clients & Projects",
+const PAGES = {dashboard: "Dashboard", quotes: "Quotations", contracts: "Contracts", invoices: "Invoices", expenses: "Expenses", partners: "Partners & Capital", clients: "Clients & Projects",
   banking: "Bank Reconciliation", journal: "Journal Entries", accounts: "Chart of Accounts",
   reports: "Reports", settings: "Settings", users: "Users"};
 let SESSION = {login_required: false, user: null};
@@ -762,6 +764,71 @@ window.doConvert = id => act(async () => { const f = formData($("#cvF"));
   const r = await api(`/api/quotes/${id}/invoice`, {percent_bp: bp, issue_date: f.issue_date, due_date: f.due_date || null});
   await render(); showInvoice(r.id); }, "Draft invoice created. Check it, then issue it.");
 
+// ----- partners & capital -----
+const fyStart = () => { const m = +REF.settings.fiscal_year_start_month, d = new Date(); let y = d.getFullYear(); if (d.getMonth() + 1 < m) y--; return `${y}-${String(m).padStart(2, "0")}-01`; };
+const isAdmin = () => !SESSION.login_required || SESSION.user?.is_admin;
+VIEWS.partners = async () => {
+  const start = fyStart(), end = today();
+  const [st, hist] = await Promise.all([api(`/api/reports/capital?start=${start}&end=${end}`), api("/api/capital/history?limit=40")]);
+  const active = st.rows.filter(r => r.is_active), shareTotal = active.reduce((t, r) => t + r.share_bp, 0);
+  page("Partners & Capital", isAdmin() ? `<button class="b" onclick="sharesDlg()">Profit shares</button><button class="b" onclick="allocDlg()">Allocate profit</button><button class="b" onclick="partnerDlg()">+ Partner</button>` : "", `
+  ${!st.rows.length ? `<div class="card"><b>No partners yet.</b><p class="muted">Add each partner with “+ Partner”. Each one gets their own capital and drawings accounts.</p></div>` : `
+  ${shareTotal !== 10000 && active.length ? `<div class="note" style="margin-top:0">Profit shares add up to ${shareTotal / 100}%, not 100%. Set them under “Profit shares” before allocating profit.</div>` : ""}
+  <div class="kpis"><div class="kpi"><div class="l">Partners' capital today</div><div class="v">${fmt(st.totals.closing_cents, {color: 1})}</div><div class="s">money in + profit shared − drawings</div></div>
+   <div class="kpi"><div class="l">Profit not yet shared</div><div class="v">${fmt(st.unallocated_profit_cents, {color: 1})}</div><div class="s">this financial year, from ${niceDate(st.fiscal_year_start)}</div></div>
+   <div class="kpi"><div class="l">Drawings this year</div><div class="v">${fmt(st.totals.drawn_cents)}</div><div class="s">taken out by partners</div></div></div>
+  <div class="pgrid">${st.rows.map(r => `<div class="card pcard" style="${r.is_active ? "" : "opacity:.6"}">
+    <div class="row"><b style="font-size:16px">${esc(r.name)}</b><span class="pill right">${r.is_active ? `${r.share_bp / 100}% share` : "left the firm"}</span></div>
+    <div class="pbal">${fmt(r.closing_cents, {color: 1})}</div><div class="muted" style="font-size:12px">capital balance</div>
+    <table style="margin-top:8px"><tr><td class="muted">Added this year</td><td class="n">${fmt(r.added_cents)}</td></tr>
+     <tr><td class="muted">Profit shared this year</td><td class="n">${fmt(r.profit_cents, {color: 1})}</td></tr>
+     <tr><td class="muted">Taken out this year</td><td class="n">${fmt(r.drawn_cents)}</td></tr>
+     ${r.is_active ? `<tr><td class="muted">Share of profit not yet shared</td><td class="n">${fmt(r.unallocated_share_cents, {color: 1})}</td></tr>` : ""}</table>
+    ${r.is_active ? `<div class="row" style="margin-top:10px"><button class="b p" onclick="moneyDlg(${r.partner_id},'contribute')">Add capital</button><button class="b" onclick="moneyDlg(${r.partner_id},'draw')">Withdraw</button>
+     ${isAdmin() ? `<button class="b right" onclick="editPartner(${r.partner_id})">Edit</button>` : ""}</div>` : ""}</div>`).join("")}</div>
+  <div class="card"><div class="row" style="margin-bottom:8px"><b>Capital statement</b><form class="row right" id="csF" onsubmit="event.preventDefault();capStatement()">
+    <input type="date" name="start" value="${start}"><input type="date" name="end" value="${end}"><button class="b">Show</button><button type="button" class="b" onclick="tableCSV($('#csT'),'capital-statement')">Export CSV</button></form></div>
+   <div class="wrap" id="csW"></div></div>`}
+  <div class="card"><b>Capital history</b><div class="wrap"><table style="margin-top:6px"><tr><th>Date</th><th>What</th><th>By</th><th class="n">Amount</th><th></th></tr>
+   ${hist.map(h => `<tr style="${h.reversed_by_entry_id || h.reverses_entry_id ? "opacity:.55" : ""}"><td>${h.date}</td><td>${esc(h.memo)}${h.reversed_by_entry_id ? ' <span class="pill">undone</span>' : ""}</td><td class="muted">${esc(h.created_by || "")}</td>
+    <td class="n">${fmt(h.amount_cents)}</td><td class="n">${isAdmin() && !h.reversed_by_entry_id && !h.reverses_entry_id ? `<button class="b d" onclick="undoCap(${h.id})">Undo</button>` : ""}</td></tr>`).join("") || '<tr><td colspan=5 class="muted">Nothing yet. Money partners put in or take out will show here.</td></tr>'}</table></div></div>`);
+  if (st.rows.length) capStatement();
+};
+window.capStatement = () => act(async () => { const f = formData($("#csF")); const st = await api(`/api/reports/capital?start=${f.start}&end=${f.end}`);
+  const row = (n, r, cls = "") => `<tr class="${cls}"><td>${n}</td><td class="n">${r.share_bp !== undefined ? r.share_bp / 100 + "%" : ""}</td><td class="n">${fmt(r.opening_cents, {color: 1})}</td><td class="n">${fmt(r.added_cents)}</td><td class="n">${fmt(r.profit_cents, {color: 1})}</td><td class="n">${fmt(r.drawn_cents)}</td><td class="n"><b>${fmt(r.closing_cents, {color: 1})}</b></td></tr>`;
+  $("#csW").innerHTML = `<table id="csT"><tr><th>Partner</th><th class="n">Share</th><th class="n">Opening</th><th class="n">+ Money in</th><th class="n">+ Profit shared</th><th class="n">− Drawings</th><th class="n">= Closing</th></tr>
+   ${st.rows.map(r => row(esc(r.name), r)).join("")}${row("Total", {...st.totals}, "total")}</table>
+   <p class="muted" style="font-size:12px">${st.start} to ${st.end}. “Profit shared” only includes profit you've allocated. Profit not yet allocated this year: <b>${fmt(st.unallocated_profit_cents, {color: 1})}</b>.</p>`; });
+window.moneyDlg = (id, kind) => { const p = REF.partners.find(x => x.id === id), add = kind === "contribute";
+  openDlg(add ? `${p.name} adds capital` : `${p.name} withdraws money`, `<p class="muted" style="margin-top:0">${add ? "Money the partner puts into the business. It increases their capital." : "Money the partner takes out for themselves (drawings). It isn't a business expense and doesn't reduce profit; it reduces their capital."}</p>
+  <form class="grid" id="mF" onsubmit="event.preventDefault()"><label>Date<input type="date" name="date" value="${today()}"></label><label>Amount<input name="amount" placeholder="0.00" inputmode="decimal"></label>
+  <label>${add ? "Paid into" : "Paid from"}<select name="account_code">${acctOpts(a => a.subtype === "cash", "1000")}</select></label><label style="grid-column:1/-1">Note <span class="muted">(optional)</span><input name="memo" placeholder="${add ? "e.g. Initial investment" : "e.g. Monthly drawing"}"></label></form>
+  <div class="row"><button class="b p right" onclick="saveMoney(${id},'${kind}')">${add ? "Record capital" : "Record withdrawal"}</button></div>`); };
+window.saveMoney = (id, kind) => act(async () => { const f = formData($("#mF")); const amt = toCents(f.amount); if (amt <= 0) throw new Error("Enter the amount");
+  await api(`/api/partners/${id}/${kind}`, {date: f.date, amount_cents: amt, account_code: f.account_code, memo: f.memo}); dlg.close(); render(); }, kind === "contribute" ? "Capital recorded" : "Withdrawal recorded");
+window.partnerDlg = () => openDlg("Add a partner", `<form class="grid" id="npF" onsubmit="event.preventDefault()"><label>Name<input name="name"></label><label>Profit share %<input name="share" placeholder="e.g. 25"></label></form>
+  <p class="muted">Creates their capital and drawings accounts. Afterwards, check that all shares still add up to 100% under “Profit shares”.</p>
+  <div class="row"><button class="b p right" onclick="act(async()=>{const f=formData($('#npF'));await api('/api/partners',{name:f.name,share_bp:pctToBp(f.share)});dlg.close();render()},'Partner added')">Add partner</button></div>`);
+window.editPartner = id => { const p = REF.partners.find(x => x.id === id);
+  openDlg(`Edit ${p.name}`, `<form class="grid" id="epF" onsubmit="event.preventDefault()"><label>Name<input name="name" value="${esc(p.name)}"></label></form>
+  <div class="row" style="margin-top:12px"><button class="b d" onclick="confirm('Mark ${esc(p.name)} as having left? Their history and balance stay; their profit share becomes 0%.')&&act(async()=>{await api('/api/partners/${id}',{is_active:false});dlg.close();render()},'Partner marked as left')">Partner has left</button>
+  <button class="b p right" onclick="act(async()=>{await api('/api/partners/${id}',{name:formData($('#epF')).name});dlg.close();render()},'Saved')">Save</button></div>`); };
+window.sharesDlg = () => { const ps = REF.partners.filter(p => p.is_active);
+  openDlg("Profit shares", `<p class="muted" style="margin-top:0">How the business's profit (or loss) is split between partners. They must add up to exactly 100%. Changing them affects future allocations only.</p>
+  <form id="shF" onsubmit="event.preventDefault()" class="grid">${ps.map(p => `<label>${esc(p.name)} %<input name="s${p.id}" value="${p.share_bp / 100}" oninput="shSum()"></label>`).join("")}</form>
+  <p id="shTotal"></p><div class="row"><button class="b" onclick="${ps.map((p, i) => `$('#shF [name=s${p.id}]').value='${((i === ps.length - 1 ? 10000 - Math.floor(10000 / ps.length) * (ps.length - 1) : Math.floor(10000 / ps.length)) / 100)}'`).join(";")};shSum()">Split equally</button>
+  <button class="b p right" onclick="saveShares()">Save shares</button></div>`); shSum(); };
+window.shSum = () => { let t = 0; try { document.querySelectorAll("#shF input").forEach(i => t += toCents(i.value || "0")); } catch { }
+  $("#shTotal").innerHTML = t === 10000 ? `<span style="color:var(--good)">Total 100% ✓</span>` : `<span class="neg">Total ${t / 100}%: must be 100%</span>`; };
+window.saveShares = () => act(async () => { const shares = {}; document.querySelectorAll("#shF input").forEach(i => shares[i.name.slice(1)] = toCents(i.value || "0"));
+  await api("/api/partners/shares", {shares}); dlg.close(); render(); }, "Profit shares saved");
+window.allocDlg = () => { const s = fyStart(), y = +s.slice(0, 4), m = +s.slice(5, 7), endFY = new Date(y + 1, m - 1, 0), iso = `${endFY.getFullYear()}-${String(endFY.getMonth() + 1).padStart(2, "0")}-${String(endFY.getDate()).padStart(2, "0")}`;
+  openDlg("Allocate profit to partners", `<p class="muted" style="margin-top:0">Shares the period's profit (or loss) into each partner's capital by their profit share. Usually done once, at the end of the financial year, after your accountant has checked the numbers. It can be undone from Capital history.</p>
+  <form class="grid" id="alF" onsubmit="event.preventDefault()"><label>From<input type="date" name="start" value="${s}"></label><label>To<input type="date" name="end" value="${iso < today() ? iso : today()}"></label></form>
+  <table style="margin-top:8px">${REF.partners.filter(p => p.is_active).map(p => `<tr><td>${esc(p.name)}</td><td class="n">${p.share_bp / 100}%</td></tr>`).join("")}</table>
+  <div class="row" style="margin-top:12px"><button class="b p right" onclick="act(async()=>{const f=formData($('#alF'));await api('/api/partners/allocate',f);dlg.close();render()},'Profit allocated to partners')">Allocate profit</button></div>`); };
+window.undoCap = id => confirm("Undo this entry? A reversing entry is recorded, so the history stays.") && act(async () => { await api(`/api/capital/${id}/reverse`, {}); render(); }, "Undone");
+
 // ----- expenses -----
 const GENERAL_PAYEE = "General expenses";
 const KIND_LABEL = {overhead: "Overhead (running the agency)", client: "Client costs (spent on client work)", media: "Ad spend you rebill", other: "Other"};
@@ -806,7 +873,9 @@ window.expenseForm = async () => { await loadCats(); const payees = await api("/
   <label>Date<input type="date" name="date" value="${today()}"></label>
   <label>Amount<input name="amount" placeholder="0.00" inputmode="decimal"></label>
   <label>Category<select name="category_code">${catOpts()}</select></label>
-  <label>Paid from<select name="paid_from" onchange="$('#exDue').hidden=!!this.value">${acctOpts(a => ["cash", "credit_card"].includes(a.subtype), "1000")}<option value="">Not paid yet (we owe it)</option></select></label>
+  <label>Paid from<select name="paid_from" onchange="$('#exDue').hidden=!!this.value">${acctOpts(a => ["cash", "credit_card"].includes(a.subtype), "1000")}
+   ${REF.partners.filter(p => p.is_active).length ? `<optgroup label="Paid personally by a partner (added to their capital)">${REF.partners.filter(p => p.is_active).map(p => opt(p.capital_account_code, `${p.name} paid it`)).join("")}</optgroup>` : ""}
+   <option value="">Not paid yet (we owe it)</option></select></label>
   <label id="exDue" hidden>Pay by<input type="date" name="due_date"></label>
   <label>Paid to <span class="muted">(optional)</span><input name="payee" list="payeeList" autocomplete="off" placeholder="e.g. staff, landlord, Meta"><datalist id="payeeList">${payees.map(x => `<option value="${esc(x)}">`).join("")}</datalist></label>
   <label style="grid-column:1/-1">Description<input name="description" placeholder="e.g. November salaries, client visit to Lahore"></label>

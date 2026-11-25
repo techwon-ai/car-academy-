@@ -501,6 +501,88 @@ class ContractTests(Base):
         L.delete_contract(self.c, c["id"])
 
 
+class PartnerTests(Base):
+    def setUp(self):
+        super().setUp()
+        self.ids = [L.create_partner(self.c, n, bp) for n, bp in (("Shayan", 3334), ("Kashmala", 3333), ("Anas", 3333))]
+
+    def stmt(self, start="2026-01-01", end="2026-12-31"):
+        return {r["name"]: r for r in L.capital_statement(self.c, start, end)["rows"]}
+
+    def test_accounts_created_and_shares(self):
+        names = {a["name"] for a in L.list_accounts(self.c)}
+        self.assertTrue({"Capital - Shayan", "Drawings - Anas"} <= names)
+        with self.assertRaisesRegex(LedgerError, "100%"):
+            L.set_partner_shares(self.c, {self.ids[0]: 5000, self.ids[1]: 2500, self.ids[2]: 2000})
+        L.set_partner_shares(self.c, {self.ids[0]: 4000, self.ids[1]: 3000, self.ids[2]: 3000})
+        with self.assertRaises(LedgerError):
+            L.create_partner(self.c, "shayan")
+        L.update_partner(self.c, self.ids[2], name="Anas Ali")
+        self.assertIn("Capital - Anas Ali", {a["name"] for a in L.list_accounts(self.c)})
+
+    def test_contribution_drawing_and_statement(self):
+        L.partner_contribution(self.c, self.ids[0], "2026-01-05", 50000000)
+        L.partner_contribution(self.c, self.ids[1], "2026-01-05", 30000000, "1030")
+        L.partner_drawing(self.c, self.ids[0], "2026-03-01", 5000000)
+        st = self.stmt()
+        self.assertEqual((st["Shayan"]["added_cents"], st["Shayan"]["drawn_cents"], st["Shayan"]["closing_cents"]),
+                         (50000000, 5000000, 45000000))
+        self.assertEqual(st["Kashmala"]["closing_cents"], 30000000)
+        self.assertEqual(self.stmt("2026-02-01", "2026-12-31")["Shayan"]["opening_cents"], 50000000)
+        self.tb_ok()
+
+    def test_profit_allocation_splits_exactly_and_no_overlap(self):
+        L.partner_contribution(self.c, self.ids[0], "2026-01-05", 10000000)
+        inv = L.create_invoice(self.c, self.acme, "2026-02-01", [{"description": "Work", "unit_price_cents": 1000001}])
+        L.issue_invoice(self.c, inv)
+        L.record_expense(self.c, "2026-02-02", 1, "6200", paid_from="1000")  # net profit 1,000,000 cents
+        st = self.stmt()
+        self.assertEqual(sum(r["unallocated_share_cents"] for r in st.values()), 1000000)
+        L.allocate_profit(self.c, "2026-01-01", "2026-06-30")
+        st = self.stmt()
+        self.assertEqual([st[n]["profit_cents"] for n in ("Shayan", "Kashmala", "Anas")], [333400, 333300, 333300])
+        with self.assertRaisesRegex(LedgerError, "already allocated"):
+            L.allocate_profit(self.c, "2026-06-01", "2026-12-31")
+        bs = L.balance_sheet(self.c, "2026-12-31")
+        self.assertTrue(bs["balanced"])
+        self.assertNotIn("Profit not yet allocated to partners", [e["name"] for e in bs["equity"]])  # all allocated
+        # undo, then it can be allocated again
+        eid = L.capital_history(self.c)[0]["id"]
+        L.reverse_capital_entry(self.c, eid, "2026-06-30")
+        self.assertEqual(self.stmt()["Anas"]["profit_cents"], 0)
+        L.allocate_profit(self.c, "2026-01-01", "2026-06-30")
+        self.tb_ok()
+
+    def test_loss_and_share_requirements(self):
+        L.record_expense(self.c, "2026-02-02", 90000, "6100", paid_from="1000")
+        L.allocate_profit(self.c, "2026-01-01", "2026-03-31")
+        self.assertEqual(sum(r["profit_cents"] for r in self.stmt().values()), -90000)
+        L.update_partner(self.c, self.ids[2], is_active=False)  # Anas leaves: shares no longer 100%
+        with self.assertRaisesRegex(LedgerError, "shares"):
+            L.allocate_profit(self.c, "2026-04-01", "2026-04-30")
+        self.tb_ok()
+
+    def test_expense_paid_personally_by_partner(self):
+        code = L.list_partners(self.c)[2]["capital_account_code"]
+        L.record_expense(self.c, "2026-03-01", 450000, "6200", paid_from=code, description="Adobe on Anas's card")
+        d = L.dashboard(self.c, "2026-03-31")
+        self.assertEqual((d["cash_cents"], d["ap_cents"]), (0, 0))
+        self.assertEqual(self.stmt()["Anas"]["added_cents"], 450000)
+        self.tb_ok()
+
+    def test_seed_from_setting_runs_once(self):
+        c = fresh_conn()
+        self.addCleanup(c.close)
+        os.environ["TECHWON_PARTNERS"] = "Shayan, Kashmala ,Anas"
+        try:
+            L.init_db(c)
+            L.init_db(c)
+        finally:
+            del os.environ["TECHWON_PARTNERS"]
+        ps = L.list_partners(c)
+        self.assertEqual([(p["name"], p["share_bp"]) for p in ps], [("Shayan", 3333), ("Kashmala", 3333), ("Anas", 3334)])
+
+
 class RetainerTests(Base):
     def test_generate_is_idempotent(self):
         L.create_client(self.c, "No Retainer Co")

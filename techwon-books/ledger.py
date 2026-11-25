@@ -213,6 +213,16 @@ CREATE TABLE IF NOT EXISTS vendors (
   email TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS partners (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  share_bp INTEGER NOT NULL DEFAULT 0 CHECK (share_bp >= 0 AND share_bp <= 10000),
+  capital_account_id INTEGER NOT NULL REFERENCES accounts(id),
+  drawings_account_id INTEGER NOT NULL REFERENCES accounts(id),
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS reconciliations (
   id INTEGER PRIMARY KEY,
   account_id INTEGER NOT NULL REFERENCES accounts(id),
@@ -341,6 +351,15 @@ CREATE TABLE IF NOT EXISTS bills (
   void_entry_id INTEGER REFERENCES journal_entries(id)
 );
 
+CREATE TABLE IF NOT EXISTS profit_allocations (
+  id INTEGER PRIMARY KEY,
+  start_date TEXT NOT NULL,
+  end_date TEXT NOT NULL,
+  net_income_cents INTEGER NOT NULL,
+  entry_id INTEGER NOT NULL REFERENCES journal_entries(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS invoice_lines (
   id INTEGER PRIMARY KEY,
   invoice_id INTEGER NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
@@ -437,6 +456,7 @@ def init_db(conn):
     with tx(conn):
         for k, v in DEFAULT_SETTINGS.items():
             conn.execute("INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING", (k, v))
+        _seed_partners_from_env(conn)
         # Books created before the standard terms existed got an empty field: fill it
         # once. Never again after that, so terms a user clears stay cleared.
         if not conn.execute("SELECT 1 FROM settings WHERE key = ?", (TERMS_SEEDED_KEY,)).fetchone():
@@ -1616,6 +1636,226 @@ def list_contracts(conn):
 
 
 # --------------------------------------------------------------------------
+# Partners & capital
+# --------------------------------------------------------------------------
+
+RETAINED = "3900"
+
+
+def _seed_partners_from_env(conn):
+    """One-time setup from the TECHWON_PARTNERS setting ("Shayan,Kashmala,Anas"), equal shares.
+    Runs only when the books have no partners yet; afterwards partners are managed in the app."""
+    import os
+    names = [" ".join(n.split()) for n in os.environ.get("TECHWON_PARTNERS", "").split(",") if n.strip()]
+    if not names or conn.execute("SELECT 1 FROM partners").fetchone() or \
+            conn.execute("SELECT 1 FROM settings WHERE key = 'partners_seeded'").fetchone():
+        return
+    shares = _equal_shares(len(names))
+    for name, bp in zip(names, shares):
+        create_partner(conn, name, bp)
+    conn.execute("INSERT INTO settings(key, value) VALUES ('partners_seeded', '1') ON CONFLICT(key) DO NOTHING")
+
+
+def _equal_shares(n):
+    base = 10000 // n
+    return [base] * (n - 1) + [10000 - base * (n - 1)]
+
+
+def _free_code(conn, lo, hi, step=10):
+    used = {r[0] for r in conn.execute("SELECT code FROM accounts")}
+    for c in range(lo, hi + 1, step):
+        if str(c) not in used:
+            return str(c)
+    raise LedgerError("No free account numbers left for partners")
+
+
+def create_partner(conn, name, share_bp=0):
+    name = " ".join(str(name or "").split())[:80]
+    if not name:
+        raise LedgerError("Enter the partner's name")
+    share_bp = _int(share_bp or 0, "share_bp")
+    if not 0 <= share_bp <= 10000:
+        raise LedgerError("A profit share must be between 0% and 100%")
+    with tx(conn):
+        if conn.execute("SELECT 1 FROM partners WHERE lower(name) = lower(?)", (name,)).fetchone():
+            raise LedgerError(f"{name} is already a partner")
+        cap = create_account(conn, _free_code(conn, 3010, 3090), f"Capital - {name}", "equity", "equity")
+        drw = create_account(conn, _free_code(conn, 3110, 3190), f"Drawings - {name}", "equity", "drawings")
+        return conn.execute("INSERT INTO partners(name, share_bp, capital_account_id, drawings_account_id)"
+                            " VALUES (?,?,?,?)", (name, share_bp, cap, drw)).lastrowid
+
+
+def _partner(conn, partner_id):
+    return _one(conn, "SELECT * FROM partners WHERE id = ?", (_int(partner_id, "partner_id"),), "Partner")
+
+
+def update_partner(conn, partner_id, name=None, is_active=None):
+    with tx(conn):
+        p = _partner(conn, partner_id)
+        if name is not None:
+            name = " ".join(str(name).split())[:80]
+            if not name:
+                raise LedgerError("Enter the partner's name")
+            if conn.execute("SELECT 1 FROM partners WHERE lower(name) = lower(?) AND id != ?", (name, p["id"])).fetchone():
+                raise LedgerError(f"{name} is already a partner")
+            conn.execute("UPDATE partners SET name = ? WHERE id = ?", (name, p["id"]))
+            conn.execute("UPDATE accounts SET name = ? WHERE id = ?", (f"Capital - {name}", p["capital_account_id"]))
+            conn.execute("UPDATE accounts SET name = ? WHERE id = ?", (f"Drawings - {name}", p["drawings_account_id"]))
+        if is_active is not None:
+            conn.execute("UPDATE partners SET is_active = ? WHERE id = ?", (1 if is_active else 0, p["id"]))
+            if not is_active:
+                conn.execute("UPDATE partners SET share_bp = 0 WHERE id = ?", (p["id"],))
+
+
+def set_partner_shares(conn, shares):
+    """shares: {partner_id: basis points}. Active partners' shares must add up to exactly 100%."""
+    with tx(conn):
+        active = {r["id"] for r in conn.execute("SELECT id FROM partners WHERE is_active = 1")}
+        given = {_int(k, "partner_id"): _int(v, "share") for k, v in (shares or {}).items()}
+        if set(given) != active:
+            raise LedgerError("Give a share for every active partner")
+        if any(not 0 <= v <= 10000 for v in given.values()):
+            raise LedgerError("Each share must be between 0% and 100%")
+        if sum(given.values()) != 10000:
+            raise LedgerError(f"Shares add up to {sum(given.values()) / 100:g}%; they must add up to exactly 100%")
+        for pid, bp in given.items():
+            conn.execute("UPDATE partners SET share_bp = ? WHERE id = ?", (bp, pid))
+
+
+def _cash_account(conn, code):
+    a = account_by_code(conn, code)
+    if a["subtype"] not in ("cash", "credit_card"):
+        raise LedgerError("Choose a bank, cash or card account")
+    return a
+
+
+def partner_contribution(conn, partner_id, date, amount_cents, account_code=CASH, memo=""):
+    """Partner puts money into the business: Dr bank/cash, Cr their capital."""
+    with tx(conn):
+        p = _partner(conn, partner_id)
+        amt = _cents(amount_cents)
+        bank = _cash_account(conn, account_code)
+        return _post(conn, date, f"Capital added by {p['name']}" + (f": {memo}" if memo else ""), [
+            {"account_id": bank["id"], "debit_cents": amt},
+            {"account_id": p["capital_account_id"], "credit_cents": amt, "memo": memo},
+        ], "capital", p["id"])
+
+
+def partner_drawing(conn, partner_id, date, amount_cents, account_code=CASH, memo=""):
+    """Partner takes money out: Dr their drawings, Cr bank/cash."""
+    with tx(conn):
+        p = _partner(conn, partner_id)
+        amt = _cents(amount_cents)
+        bank = _cash_account(conn, account_code)
+        return _post(conn, date, f"Drawings by {p['name']}" + (f": {memo}" if memo else ""), [
+            {"account_id": p["drawings_account_id"], "debit_cents": amt, "memo": memo},
+            {"account_id": bank["id"], "credit_cents": amt},
+        ], "drawing", p["id"])
+
+
+def allocate_profit(conn, start, end):
+    """Share the period's net profit (or loss) into partners' capital by their ratio.
+    Posted on the last day; a period can't overlap one already allocated."""
+    start, end = _date(start, "start"), _date(end, "end")
+    if end < start:
+        raise LedgerError("The end date must be after the start date")
+    with tx(conn):
+        clash = conn.execute("SELECT * FROM profit_allocations WHERE start_date <= ? AND end_date >= ?", (end, start)).fetchone()
+        if clash:
+            raise LedgerError(f"Profit for {clash['start_date']} to {clash['end_date']} is already allocated; periods can't overlap")
+        partners = conn.execute("SELECT * FROM partners WHERE is_active = 1 AND share_bp > 0 ORDER BY id").fetchall()
+        if not partners or sum(p["share_bp"] for p in partners) != 10000:
+            raise LedgerError("Set the partners' profit shares (adding up to 100%) before allocating profit")
+        ni = profit_and_loss(conn, start, end)["net_income_cents"]
+        if ni == 0:
+            raise LedgerError("There is no profit or loss in that period to allocate")
+        parts, given = [], 0
+        for i, p in enumerate(partners):
+            amt = ni - given if i == len(partners) - 1 else _round(Decimal(ni) * p["share_bp"] / Decimal(10000))
+            given += amt
+            parts.append((p, amt))
+        retained = account_by_code(conn, RETAINED, must_be_active=False)
+        lines = [{"account_id": retained["id"], **({"debit_cents": ni} if ni > 0 else {"credit_cents": -ni}),
+                  "memo": "Profit allocated to partners" if ni > 0 else "Loss allocated to partners"}]
+        for p, amt in parts:
+            if amt:
+                lines.append({"account_id": p["capital_account_id"],
+                              **({"credit_cents": amt} if amt > 0 else {"debit_cents": -amt}),
+                              "memo": f"{p['share_bp'] / 100:g}% share"})
+        eid = _post(conn, end, f"{'Profit' if ni > 0 else 'Loss'} allocation {start} to {end}", lines, "profit_allocation")
+        conn.execute("INSERT INTO profit_allocations(start_date, end_date, net_income_cents, entry_id) VALUES (?,?,?,?)",
+                     (start, end, ni, eid))
+        return eid
+
+
+def _acct_movement(conn, account_id, start=None, end=None, source=None, exclude_source=None):
+    q = ("SELECT COALESCE(SUM(l.credit_cents - l.debit_cents),0) FROM journal_lines l JOIN journal_entries e"
+         " ON e.id = l.entry_id WHERE l.account_id = ?")
+    args = [account_id]
+    if start:
+        q += " AND e.date >= ?"; args.append(start)
+    if end:
+        q += " AND e.date <= ?"; args.append(end)
+    if source:
+        q += " AND e.source_type = ?"; args.append(source)
+    if exclude_source:
+        q += " AND e.source_type != ?"; args.append(exclude_source)
+    return conn.execute(q, args).fetchone()[0]
+
+
+def capital_statement(conn, start, end):
+    """Per partner: opening + money in + profit share - drawings = closing (credit-positive)."""
+    start, end = _date(start, "start"), _date(end, "end")
+    before = (dt.date.fromisoformat(start) - dt.timedelta(days=1)).isoformat()
+    fy = _fy_start(conn, end)
+    unallocated = profit_and_loss(conn, fy, end)["net_income_cents"] - sum(
+        r[0] for r in conn.execute("SELECT net_income_cents FROM profit_allocations WHERE start_date >= ? AND end_date <= ?",
+                                   (fy, end)))
+    rows = []
+    for p in conn.execute("SELECT * FROM partners ORDER BY is_active DESC, id").fetchall():
+        cap, drw = p["capital_account_id"], p["drawings_account_id"]
+        opening = _acct_movement(conn, cap, end=before) + _acct_movement(conn, drw, end=before)
+        profit = _acct_movement(conn, cap, start, end, source="profit_allocation")
+        added = _acct_movement(conn, cap, start, end, exclude_source="profit_allocation")
+        drawn = -_acct_movement(conn, drw, start, end)
+        closing = opening + added + profit - drawn
+        rows.append({"partner_id": p["id"], "name": p["name"], "share_bp": p["share_bp"], "is_active": bool(p["is_active"]),
+                     "opening_cents": opening, "added_cents": added, "profit_cents": profit, "drawn_cents": drawn,
+                     "closing_cents": closing,
+                     "unallocated_share_cents": _round(Decimal(unallocated) * p["share_bp"] / Decimal(10000)) if p["is_active"] else 0,
+                     "capital_account_code": conn.execute("SELECT code FROM accounts WHERE id = ?", (cap,)).fetchone()[0]})
+    total = {k: sum(r[k] for r in rows) for k in ("opening_cents", "added_cents", "profit_cents", "drawn_cents", "closing_cents")}
+    allocations = [dict(r) for r in conn.execute("SELECT * FROM profit_allocations ORDER BY end_date DESC")]
+    return {"start": start, "end": end, "fiscal_year_start": fy, "rows": rows, "totals": total,
+            "unallocated_profit_cents": unallocated, "allocations": allocations}
+
+
+def list_partners(conn):
+    return [dict(r) | {"capital_account_code": r["cap_code"], "drawings_account_code": r["drw_code"]} for r in conn.execute(
+        "SELECT p.*, a.code AS cap_code, d.code AS drw_code FROM partners p JOIN accounts a ON a.id = p.capital_account_id"
+        " JOIN accounts d ON d.id = p.drawings_account_id ORDER BY p.is_active DESC, p.id")]
+
+
+def capital_history(conn, limit=50):
+    return [dict(r) for r in conn.execute(
+        "SELECT e.id, e.date, e.memo, e.source_type, e.created_by, e.reversed_by_entry_id, e.reverses_entry_id,"
+        " (SELECT SUM(debit_cents) FROM journal_lines WHERE entry_id = e.id) AS amount_cents FROM journal_entries e"
+        " WHERE e.source_type IN ('capital','drawing','profit_allocation') ORDER BY e.date DESC, e.id DESC LIMIT ?",
+        (_int(limit, "limit"),))]
+
+
+def reverse_capital_entry(conn, entry_id, date=None):
+    with tx(conn):
+        e = _one(conn, "SELECT * FROM journal_entries WHERE id = ?", (_int(entry_id, "entry_id"),), "Entry")
+        if e["source_type"] not in ("capital", "drawing", "profit_allocation"):
+            raise LedgerError("That isn't a capital, drawing or profit allocation entry")
+        rid = _reverse(conn, e["id"], date or max(_today(), e["date"]), f"Reversal: {e['memo']}")
+        if e["source_type"] == "profit_allocation":
+            conn.execute("DELETE FROM profit_allocations WHERE entry_id = ?", (e["id"],))
+        return rid
+
+
+# --------------------------------------------------------------------------
 # Bills & expenses (A/P)
 # --------------------------------------------------------------------------
 
@@ -1676,9 +1916,11 @@ def pay_bill(conn, bill_id, date, amount_cents, paid_from_account_code=CASH, ref
         if amount > bal:
             raise LedgerError(f"Payment is more than the {_money(conn, bal)} still owed on this expense")
         src = account_by_code(conn, paid_from_account_code)
-        if src["subtype"] not in ("cash", "credit_card"):
-            raise LedgerError("Pay bills from a bank/cash or credit card account")
-        eid = _post(conn, date, f"Payment to {b['vendor_name']}", [
+        # A partner's capital account means it was paid from their own pocket: it counts as capital they put in.
+        by_partner = conn.execute("SELECT name FROM partners WHERE capital_account_id = ?", (src["id"],)).fetchone()
+        if not by_partner and src["subtype"] not in ("cash", "credit_card"):
+            raise LedgerError("Pay bills from a bank/cash or credit card account, or as paid personally by a partner")
+        eid = _post(conn, date, f"Payment to {b['vendor_name']}" + (f" (paid personally by {by_partner['name']})" if by_partner else ""), [
             {"account_code": AP, "debit_cents": amount, "memo": b["vendor_name"]},
             {"account_id": src["id"], "credit_cents": amount, "memo": b["vendor_name"]},
         ], "bill_payment", b["id"])
@@ -2009,6 +2251,14 @@ def balance_sheet(conn, as_of=None):
                 for r in rows if r["type"] == t and r["balance_cents"]]
 
     assets, liabilities, equity = section("asset"), section("liability"), section("equity")
+    if conn.execute("SELECT 1 FROM partners").fetchone():
+        kept = sum(e["amount_cents"] for e in equity if e["subtype"] == "retained_earnings")
+        equity = [e for e in equity if e["subtype"] != "retained_earnings"]
+        undistributed = retained + current + kept
+        if undistributed:
+            equity.append({"code": "", "name": "Profit not yet allocated to partners", "subtype": "computed",
+                           "amount_cents": undistributed})
+        retained = current = 0
     if retained:
         equity.append({"code": "", "name": "Retained Earnings (prior years, computed)", "subtype": "computed",
                        "amount_cents": retained})

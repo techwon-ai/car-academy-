@@ -307,6 +307,42 @@ def _(c, q, b):
     return auth.change_own_password(c, c.auth_user, b.get("current_password"), b.get("new_password"))
 
 
+# ---- partners & capital ----------------------------------------------------
+
+@route("GET", "/api/partners")
+def _(c, q, b): return L.list_partners(c)
+@route("POST", "/api/partners")
+def _(c, q, b):
+    _admin(c)
+    return {"id": L.create_partner(c, b.get("name"), b.get("share_bp", 0))}
+@route("POST", "/api/partners/shares")
+def _(c, q, b):
+    _admin(c)
+    return L.set_partner_shares(c, b.get("shares"))
+@route("POST", "/api/partners/allocate")
+def _(c, q, b):
+    _admin(c)
+    return {"id": L.allocate_profit(c, b.get("start"), b.get("end"))}
+@route("POST", r"/api/partners/(\d+)")
+def _(c, q, b, pid):
+    _admin(c)
+    return L.update_partner(c, pid, b.get("name"), b.get("is_active"))
+@route("POST", r"/api/partners/(\d+)/contribute")
+def _(c, q, b, pid):
+    return {"id": L.partner_contribution(c, pid, b.get("date"), b.get("amount_cents"), b.get("account_code") or L.CASH, b.get("memo", ""))}
+@route("POST", r"/api/partners/(\d+)/draw")
+def _(c, q, b, pid):
+    return {"id": L.partner_drawing(c, pid, b.get("date"), b.get("amount_cents"), b.get("account_code") or L.CASH, b.get("memo", ""))}
+@route("GET", "/api/capital/history")
+def _(c, q, b): return L.capital_history(c, q.get("limit", 50))
+@route("POST", r"/api/capital/(\d+)/reverse")
+def _(c, q, b, eid):
+    _admin(c)
+    return {"id": L.reverse_capital_entry(c, eid, b.get("date"))}
+@route("GET", "/api/reports/capital")
+def _(c, q, b): return L.capital_statement(c, q.get("start"), q.get("end"))
+
+
 # ---- reports --------------------------------------------------------------
 
 @route("GET", "/api/dashboard")
